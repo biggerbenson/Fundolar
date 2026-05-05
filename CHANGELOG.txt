@@ -1,0 +1,93 @@
+Fundolar Plugin Changelog
+========================
+
+Version 1.1.14 - 2026-05-05
+--------------------------
+- Plugin header **Description** and readme summary/opening use general language (no enumerated gateway brands); Gateways bullet renamed to **Payment methods** with non-brand wording.
+
+Version 1.1.13 - 2026-05-05
+--------------------------
+- Shortened main plugin **Description** header and readme.txt short description line to highlight: shortcode donations, Fundolar Central sync, gateways, dashboard, transactions.
+
+Version 1.1.12 - 2026-05-05
+--------------------------
+- WordPress.org plugin-check: readme title line `=== Fundolar ===` matches **Plugin Name** in `fundolar.php`; **Tested up to: 6.9** (was 6.8). Description and install copy use the short name **Fundolar** where the long title appeared.
+
+Version 1.1.11 - 2026-05-05
+--------------------------
+- Plugins screen **View details** opens the standard plugin-information thickbox (tabs from `readme.txt`: Description, Installation, FAQ, Screenshots, Privacy, Changelog) via `plugins_api` filter; **thickbox** loaded on `plugins.php`.
+- New class `Fundolar_Plugin_Information`; optional `icon-128x128.png` / `icon-256x256.png` in plugin root for modal icon.
+
+Version 1.1.10 - 2026-05-05
+--------------------------
+- **How to use** is a **submenu** under Fundolar (page `fundolar-how-to`), not a Settings tab. Content emphasizes site key + sync with Fundolar Central to go live; optional shortcode, General, Layout, Advanced, Transactions.
+- Plugins screen: action links **Settings** and **How to use**. `render_app_header()` accepts optional custom action buttons.
+- Readme: installation no longer requires Stripe webhooks for the default flow; points to **How to use** submenu.
+
+Version 1.1.9 - 2026-05-05
+--------------------------
+- Fundolar → Settings: added **How to use** tab (numbered quick-start; superseded by 1.1.10 submenu).
+
+Version 1.1.8 - 2026-05-05
+--------------------------
+- Renamed plugin directory `assets/` to `resources/` for bundled CSS, JavaScript, and `images/logos/`, reserving the name `assets/` for WordPress.org Subversion (plugin headers, banners, screenshots).
+- Enqueue and form logo paths updated; readme documents `resources/images/logos/` for custom payment marks.
+
+Version 1.1.7 - 2026-05-05
+--------------------------
+- Removed `includes/fundolar-author-platform-config.php` from the distribution; gateway and platform integration use Fundolar Central plus WordPress admin settings. `Fundolar_Author_Credentials` remains only for optional `FUNDOLAR_AUTHOR_*` defines in wp-config when needed.
+- Admin support submissions (help UI): **info@fundolar.com**.
+- Readme: expanded Description, Installation, FAQ, Privacy, External services; Stable tag 1.1.7. Author URI matches Plugin URI (https://fundolar.com/).
+
+Version 1.1.6 - 2026-05-05
+--------------------------
+- WordPress.org packaging: plugin display name (Fundolar — Donations & Payment Forms), readme updates (Contributors: biggerbenson, dchamp-legacy, fundolar; Privacy; External services), Author URI and Domain Path header, Stable tag aligned with release.
+- Security / distribution: removed all embedded API secrets from optional `fundolar-author-platform-config.php` defaults — deploy secrets only via wp-config.php or secure environment files; rotate any keys previously exposed in version control.
+- Support inbox for admin contact form: support@fundolar.com (superseded by info@fundolar.com in 1.1.7).
+
+Version 1.1.5 - 2026-04-30
+--------------------------
+- Breaking behavior change: no automatic default Fundolar Central hostname. The plugin does not call Central until you set Fundolar Central URL in Payments, or FUNDOLAR_CENTRAL_URL in wp-config.php, or the fundolar_platform_base_url filter. Prevents cURL error 6 when the old default host is not in your server’s DNS.
+- connect/signed requests return a clear error if the base URL is missing; Payments screen shows “Not set” when applicable.
+
+Version 1.1.4 - 2026-04-30
+--------------------------
+- Payments settings: optional "Fundolar Central URL" when the default example host is unreachable or not in DNS from the WordPress host.
+- Optional wp-config.php constant FUNDOLAR_CENTRAL_URL (same purpose as the setting; saved setting wins when both are set).
+- Shorter DNS/cURL error 6 hint; suggests the setting or wp-config define.
+- Platform HTTP client: configurable timeout and sslverify via filters, stable User-Agent, trailing-slash path normalization for HMAC alignment with Fundolar Central.
+- Activation/connect: validate api_key and signing_secret in the response; richer error messages from Central JSON.
+- Fundolar Central (separate app): normalized request paths for signatures; tiered KYC (gateway sync allowed before identity approval); reject empty signing secrets on activate/register-install.
+
+Version 1.1.3 - 2026-04-17
+--------------------------
+- Added automatic USD-base amount conversion across supported currencies in the donation form.
+- Preset amounts now convert from USD-equivalent values when currency changes.
+- Custom amount now keeps editable behavior while preserving USD-equivalent value during currency switches.
+- Added configurable FX rates map via plugin localization/filter for display conversion.
+
+Version 1.1.2 - 2026-04-17
+--------------------------
+- Implemented Pesapal API v3 checkout initialization (token, IPN registration, submit order, redirect URL handling).
+- Added Pesapal callback verification flow to update donation statuses after return.
+- Enforced Pesapal currency availability in backend and frontend to mobile-money enabled currencies.
+- Hid/disabled Pesapal option dynamically when selected currency is not supported.
+- Added shared Pesapal supported currency list for consistent UI/API behavior.
+
+Version 1.1.1 - 2026-04-17
+--------------------------
+- Fixed PayPal capture failures for logged-in users caused by stale nonce/token validation paths.
+- Added nonce refresh + retry logic in frontend API requests when "Invalid security token" is returned.
+- Added cache-busting query to bootstrap nonce fetch to reduce cached-token issues.
+- Added explicit frontend and backend Paystack currency guard: Paystack is now KES-only.
+- Updated gateway selector UX so Paystack is hidden/disabled when selected currency is not KES.
+- Added explicit Pesapal submit path so the API message is shown instead of generic form error.
+- Improved client-side validation messaging in payment flows.
+
+Version 1.1.0
+-------------
+- Central platform communication updates (license key activation, gateway sync, donation reporting).
+
+Version 1.0.0
+-------------
+- Initial release.

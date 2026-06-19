@@ -1,6 +1,35 @@
 Fundolar Plugin Changelog
 ========================
 
+Version 1.3.6 - 2026-06-10
+--------------------------
+- Dashboard KPIs and charts count **completed** donations only (volume, revenue, unique donors).
+- USD ledger recording: transactions stored in USD with payment currency preserved for receipts.
+- Central deletion sync: removes local transactions when donations are deleted on Fundolar Central.
+- Central gateway sync improvements, Mobile Money (UG) logo, and MarzPay checkout support.
+
+Version 1.3.0 - 2026-06-10
+--------------------------
+- Payment setup modes: **Use own gateway keys** (Stripe & PayPal, fully functional without Central) or **Connect Fundolar Central** (optional, all gateways).
+- Own-keys UI: manual API fields, Connect with Stripe/PayPal buttons, platform fee banner (3.5%), enable toggles per gateway.
+- Platform fee routing via Stripe Connect destination and PayPal Partner payee (`FUNDOLAR_PLATFORM_*` wp-config constants).
+- Dashboard notice: unlock Paystack, Pesapal, Flutterwave free via Central.
+- How-to guide rewritten with Connect account integration steps.
+- readme.txt updated for WordPress.org compliance (no required site key); legal URLs fixed.
+
+Version 1.2.0 - 2026-06-10
+--------------------------
+- Seamless in-place upgrade from the legacy Fundora plugin: settings, transactions, shortcodes, and gateway return URLs migrate automatically with no rename shown to site owners. The plugin stays active through a normal update (`fundora/fundora.php` bootstrap); nothing is deactivated.
+- Legacy `[fundora_donate]` shortcode and `fundora_gateway` callback URLs continue to work.
+- After connecting to Fundolar Central, past local donations sync with exact stored amounts (`preserve_amounts`).
+- Dashboard notices: former Fundora users see a concise rebrand welcome; new Fundolar installs see Central onboarding. Legacy Fundora options and tables are cleaned up after migration.
+
+Version 1.1.15 - 2026-05-15
+--------------------------
+- readme.txt: full **External services** section (Fundolar Central, Stripe, PayPal, Paystack, Flutterwave, Pesapal) with data sent, when, endpoints, and terms/privacy URLs.
+- REST: donation POST routes use `permission_donate_request` (valid `fundolar_donate` or `wp_rest` nonce); removed PayPal capture authorization by local order ID only; cookie-auth bypass only when `X-WP-Nonce` verifies `wp_rest`.
+- WordPress.org: **Tested up to: 7.0** (automated plugin scan compatibility).
+
 Version 1.1.14 - 2026-05-05
 --------------------------
 - Plugin header **Description** and readme summary/opening use general language (no enumerated gateway brands); Gateways bullet renamed to **Payment methods** with non-brand wording.

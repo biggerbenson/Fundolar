@@ -38,6 +38,7 @@ class Fundolar_DB {
 			donor_name varchar(190) NOT NULL DEFAULT '',
 			donor_email varchar(190) NOT NULL DEFAULT '',
 			currency char(3) NOT NULL DEFAULT 'USD',
+			payment_currency char(3) NULL DEFAULT NULL,
 			amount_gross decimal(14,4) NOT NULL DEFAULT 0,
 			amount_platform_fee decimal(14,4) NOT NULL DEFAULT 0,
 			amount_net decimal(14,4) NOT NULL DEFAULT 0,
@@ -66,6 +67,7 @@ class Fundolar_DB {
 			'donor_name'             => '',
 			'donor_email'            => '',
 			'currency'               => 'USD',
+			'payment_currency'       => null,
 			'amount_gross'           => 0,
 			'amount_platform_fee'    => 0,
 			'amount_net'             => 0,
@@ -85,6 +87,9 @@ class Fundolar_DB {
 				'donor_name'             => sanitize_text_field( $row['donor_name'] ),
 				'donor_email'            => sanitize_email( $row['donor_email'] ),
 				'currency'               => strtoupper( substr( sanitize_text_field( $row['currency'] ), 0, 3 ) ),
+				'payment_currency'       => isset( $row['payment_currency'] ) && $row['payment_currency'] !== null && $row['payment_currency'] !== ''
+					? strtoupper( substr( sanitize_text_field( (string) $row['payment_currency'] ), 0, 3 ) )
+					: null,
 				'amount_gross'           => $row['amount_gross'],
 				'amount_platform_fee'    => $row['amount_platform_fee'],
 				'amount_net'             => $row['amount_net'],
@@ -94,7 +99,7 @@ class Fundolar_DB {
 				'receipt_amount_display' => $row['receipt_amount_display'],
 				'meta'                   => $row['meta'],
 			),
-			array( '%s', '%s', '%s', '%f', '%f', '%f', '%s', '%s', '%s', '%f', '%s' )
+			array( '%s', '%s', '%s', '%s', '%f', '%f', '%f', '%s', '%s', '%s', '%f', '%s' )
 		);
 		return $ok ? (int) $wpdb->insert_id : false;
 	}
@@ -241,7 +246,7 @@ class Fundolar_DB {
 
 		$count_now = (int) $wpdb->get_var(
 			$wpdb->prepare(
-				"SELECT COUNT(*) FROM {$table} WHERE status = %s AND DATE(created_at) BETWEEN %s AND %s",
+				"SELECT COUNT(DISTINCT donor_email) FROM {$table} WHERE status = %s AND donor_email <> '' AND DATE(created_at) BETWEEN %s AND %s",
 				'completed',
 				$start,
 				$end
@@ -249,7 +254,7 @@ class Fundolar_DB {
 		);
 		$count_prev = (int) $wpdb->get_var(
 			$wpdb->prepare(
-				"SELECT COUNT(*) FROM {$table} WHERE status = %s AND DATE(created_at) BETWEEN %s AND %s",
+				"SELECT COUNT(DISTINCT donor_email) FROM {$table} WHERE status = %s AND donor_email <> '' AND DATE(created_at) BETWEEN %s AND %s",
 				'completed',
 				$prev_start,
 				$prev_end
@@ -337,5 +342,142 @@ class Fundolar_DB {
 			'rows'  => $rows ? $rows : array(),
 			'total' => $total,
 		);
+	}
+
+	/**
+	 * Local transactions not yet linked to Fundolar Central.
+	 *
+	 * @param int $limit Max rows per batch.
+	 * @return array<int,object>
+	 */
+	public static function unsynced_transactions( $limit = 100 ) {
+		global $wpdb;
+		$table = self::table();
+		$limit = max( 1, min( 500, (int) $limit ) );
+		$rows  = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT * FROM {$table}
+				WHERE meta IS NULL
+					OR meta NOT LIKE %s
+				ORDER BY id ASC
+				LIMIT %d",
+				'%platform_donation_id%',
+				$limit
+			)
+		);
+		return $rows ? $rows : array();
+	}
+
+	/**
+	 * Count local transactions missing a Central donation id.
+	 *
+	 * @return int
+	 */
+	public static function count_unsynced_transactions() {
+		global $wpdb;
+		$table = self::table();
+		return (int) $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT COUNT(*) FROM {$table}
+				WHERE meta IS NULL
+					OR meta NOT LIKE %s",
+				'%platform_donation_id%'
+			)
+		);
+	}
+
+	/**
+	 * Delete a local transaction row.
+	 *
+	 * @param int $id Local transaction id.
+	 * @return bool
+	 */
+	public static function delete( $id ) {
+		global $wpdb;
+		$id = (int) $id;
+		if ( $id <= 0 ) {
+			return false;
+		}
+		return false !== $wpdb->delete( self::table(), array( 'id' => $id ), array( '%d' ) );
+	}
+
+	/**
+	 * Delete local rows linked to a Central donation id stored in meta.
+	 *
+	 * @param int $platform_donation_id Central donation id.
+	 * @return int Number of rows deleted.
+	 */
+	public static function delete_by_platform_donation_id( $platform_donation_id ) {
+		global $wpdb;
+		$platform_donation_id = (int) $platform_donation_id;
+		if ( $platform_donation_id <= 0 ) {
+			return 0;
+		}
+		$like1 = '%"platform_donation_id":' . $platform_donation_id . ',%';
+		$like2 = '%"platform_donation_id":' . $platform_donation_id . '}%';
+		$ids   = $wpdb->get_col(
+			$wpdb->prepare(
+				'SELECT id FROM ' . self::table() . ' WHERE meta LIKE %s OR meta LIKE %s',
+				$like1,
+				$like2
+			)
+		);
+		$deleted = 0;
+		foreach ( (array) $ids as $row_id ) {
+			if ( self::delete( (int) $row_id ) ) {
+				++$deleted;
+			}
+		}
+		return $deleted;
+	}
+
+	/**
+	 * Insert a pending checkout transaction using USD ledger + payment currency split.
+	 *
+	 * @param string               $donor_name  Donor name.
+	 * @param string               $donor_email Donor email.
+	 * @param array<string,mixed>  $split       Checkout split from Fundolar_Fees::split_for_checkout().
+	 * @param string               $gateway     Gateway slug.
+	 * @param string               $gateway_ref Gateway reference.
+	 * @param array<string,mixed>  $meta        Optional meta.
+	 * @return int|false
+	 */
+	public static function insert_checkout_transaction( $donor_name, $donor_email, array $split, $gateway, $gateway_ref, array $meta = array() ) {
+		$ledger = Fundolar_Ledger::row_from_checkout_split( $split );
+		return self::insert(
+			array_merge(
+				$ledger,
+				array(
+					'donor_name'  => $donor_name,
+					'donor_email' => $donor_email,
+					'status'      => 'pending',
+					'gateway'     => $gateway,
+					'gateway_ref' => $gateway_ref,
+					'meta'        => $meta,
+				)
+			)
+		);
+	}
+
+	/**
+	 * Convert legacy non-USD transaction rows to USD ledger storage.
+	 *
+	 * @return int Number of rows converted.
+	 */
+	public static function backfill_usd_ledger() {
+		global $wpdb;
+		$table = self::table();
+		$rows  = $wpdb->get_results( "SELECT * FROM {$table} WHERE currency <> 'USD' OR payment_currency IS NULL OR payment_currency = ''" );
+		$count = 0;
+		foreach ( (array) $rows as $row ) {
+			$patch = Fundolar_Ledger::backfill_row( $row );
+			if ( ! is_array( $patch ) ) {
+				continue;
+			}
+			if ( self::update( (int) $row->id, $patch ) ) {
+				++$count;
+			}
+		}
+		return $count;
 	}
 }

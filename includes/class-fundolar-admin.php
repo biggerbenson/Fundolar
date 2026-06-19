@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 /**
  * wp-admin settings, documentation, and transactions.
  *
@@ -55,6 +55,12 @@ class Fundolar_Admin {
 	 * Save main settings.
 	 */
 	public static function register_settings() {
+		if ( ! empty( $_GET['fundolar_oauth_ok'] ) && current_user_can( 'manage_options' ) ) {
+			$gw = sanitize_key( wp_unslash( $_GET['fundolar_oauth_ok'] ) );
+			if ( in_array( $gw, array( 'stripe', 'paypal' ), true ) ) {
+				add_settings_error( 'fundolar', 'oauth-ok', __( 'Account connected successfully.', 'fundolar' ), 'success' );
+			}
+		}
 		if ( empty( $_POST['fundolar_save_settings'] ) || ! current_user_can( 'manage_options' ) ) {
 			return;
 		}
@@ -71,20 +77,30 @@ class Fundolar_Admin {
 			}
 			$input['preset_amounts'] = $amounts;
 		}
+		if ( ! empty( $input['fundolar_connect_platform'] ) || ! empty( $input['fundolar_sync_platform'] ) ) {
+			$input['payment_mode'] = Fundolar_Payments::MODE_CENTRAL;
+		}
 		Fundolar_Payments::save_settings( $input );
 		if ( ! empty( $input['fundolar_connect_platform'] ) ) {
 			$connected = Fundolar_Platform::connect_site();
 			if ( is_wp_error( $connected ) ) {
 				add_settings_error( 'fundolar', 'platform-connect-failed', $connected->get_error_message(), 'error' );
 			} else {
-				add_settings_error( 'fundolar', 'platform-connected', __( 'Connected. Payment settings were synced.', 'fundolar' ), 'success' );
+				$msg = __( 'Connected. Payment settings were synced.', 'fundolar' );
+				$msg = self::append_historical_sync_message( $msg );
+				add_settings_error( 'fundolar', 'platform-connected', $msg, 'success' );
 			}
 		} elseif ( ! empty( $input['fundolar_sync_platform'] ) ) {
-			$sync = Fundolar_Platform::sync_gateway_settings();
+			$sync = Fundolar_Platform::maybe_sync_gateways( true );
 			if ( is_wp_error( $sync ) ) {
 				add_settings_error( 'fundolar', 'platform-sync-failed', $sync->get_error_message(), 'error' );
 			} else {
-				add_settings_error( 'fundolar', 'platform-sync-success', __( 'Latest payment settings were synced.', 'fundolar' ), 'success' );
+				$history = Fundolar_Platform::sync_historical_donations( 50 );
+				$msg     = __( 'Latest payment settings were synced.', 'fundolar' );
+				if ( ! is_wp_error( $history ) && ! empty( $history['synced'] ) ) {
+					$msg = self::append_historical_sync_message( $msg, $history );
+				}
+				add_settings_error( 'fundolar', 'platform-sync-success', $msg, 'success' );
 			}
 		} else {
 			add_settings_error( 'fundolar', 'saved', __( 'Settings saved.', 'fundolar' ), 'success' );
@@ -118,7 +134,7 @@ class Fundolar_Admin {
 		$site  = home_url( '/' );
 		$label = $labels[ $type ];
 		/* translators: 1: topic label, 2: site URL */
-		$subject = sprintf( __( '[Fundolar] %1$s — %2$s', 'fundolar' ), $label, wp_parse_url( $site, PHP_URL_HOST ) );
+		$subject = sprintf( __( '[Fundolar] %1$s â€” %2$s', 'fundolar' ), $label, wp_parse_url( $site, PHP_URL_HOST ) );
 		$body    = implode(
 			"\n",
 			array(
@@ -186,7 +202,7 @@ class Fundolar_Admin {
 	}
 
 	/**
-	 * How to use — standalone help page (submenu).
+	 * How to use â€” standalone help page (submenu).
 	 */
 	public static function render_how_to_use() {
 		if ( ! current_user_can( 'manage_options' ) ) {
@@ -199,7 +215,7 @@ class Fundolar_Admin {
 			<?php
 			self::render_app_header(
 				__( 'How to use Fundolar', 'fundolar' ),
-				__( 'Connect your site to Fundolar Central, then start collecting donations.', 'fundolar' ),
+				__( 'Set up donations by connecting Fundolar Central and syncing payment gateways.', 'fundolar' ),
 				array(
 					array(
 						'url'   => $settings_url,
@@ -214,42 +230,69 @@ class Fundolar_Admin {
 			?>
 			<div class="fundolar-card">
 				<div class="fundolar-card__head">
-					<h2><?php esc_html_e( 'Get started in a few steps', 'fundolar' ); ?></h2>
+					<h2><?php esc_html_e( 'How the plugin works', 'fundolar' ); ?></h2>
 				</div>
 				<div class="fundolar-card__body">
-					<p class="fundolar-card__intro"><?php esc_html_e( 'Follow these steps once. You can reopen this page anytime from the Fundolar menu.', 'fundolar' ); ?></p>
 					<ol class="fundolar-howto-steps">
 						<li>
-							<strong><?php esc_html_e( 'Show the donation form on your site', 'fundolar' ); ?></strong>
-							<?php esc_html_e( 'Edit a page or post and add this shortcode where you want the form:', 'fundolar' ); ?>
+							<strong><?php esc_html_e( 'Add the donation form', 'fundolar' ); ?></strong>
+							<?php esc_html_e( 'Place the shortcode on any page or post:', 'fundolar' ); ?>
 							<code class="fundolar-howto-code">[fundolar_donate]</code>
-							<?php esc_html_e( 'Publish and visit the page to preview.', 'fundolar' ); ?>
 						</li>
 						<li>
 							<strong><?php esc_html_e( 'Connect Fundolar Central', 'fundolar' ); ?></strong>
-							<?php esc_html_e( 'Go to', 'fundolar' ); ?>
-							<a href="<?php echo esc_url( $settings_url ); ?>"><?php esc_html_e( 'Fundolar → Settings → Payments', 'fundolar' ); ?></a>.
-							<?php esc_html_e( 'Paste your site key, click connect, then sync. Your WordPress site stays aligned with Fundolar Central — no extra gateway setup is required here beyond that.', 'fundolar' ); ?>
+							<?php esc_html_e( 'Under Fundolar â†’ Settings â†’ Payments, paste your site key, connect, and click Sync gateways. Payment methods are enabled in Fundolar Central admin.', 'fundolar' ); ?>
 						</li>
 						<li>
-							<strong><?php esc_html_e( 'Set currency and quick amounts (optional)', 'fundolar' ); ?></strong>
-							<?php esc_html_e( 'On the General tab in Settings, choose a default currency and preset donation amounts (one per line). Donors see these as quick-select buttons.', 'fundolar' ); ?>
+							<strong><?php esc_html_e( 'Platform fee (3.5%)', 'fundolar' ); ?></strong>
+							<?php esc_html_e( 'Each donation records gross amount, platform fee, and net to your site.', 'fundolar' ); ?>
 						</li>
 						<li>
-							<strong><?php esc_html_e( 'Match your brand (optional)', 'fundolar' ); ?></strong>
-							<?php esc_html_e( 'Use the Layout tab to pick a form style and colors.', 'fundolar' ); ?>
-						</li>
-						<li>
-							<strong><?php esc_html_e( 'Optional: email notifications', 'fundolar' ); ?></strong>
-							<?php esc_html_e( 'Under Advanced in Settings, you can email admins when a donation succeeds and send a receipt to donors.', 'fundolar' ); ?>
-						</li>
-						<li>
-							<strong><?php esc_html_e( 'Track donations', 'fundolar' ); ?></strong>
-							<?php esc_html_e( 'View payments anytime under', 'fundolar' ); ?>
-							<a href="<?php echo esc_url( admin_url( 'admin.php?page=fundolar-transactions' ) ); ?>"><?php esc_html_e( 'Fundolar → Transactions', 'fundolar' ); ?></a>.
-							<?php esc_html_e( 'A summary may also appear on your WordPress dashboard.', 'fundolar' ); ?>
+							<strong><?php esc_html_e( 'Track results', 'fundolar' ); ?></strong>
+							<?php esc_html_e( 'View donations under Fundolar â†’ Transactions and on the WordPress dashboard widget.', 'fundolar' ); ?>
 						</li>
 					</ol>
+				</div>
+			</div>
+
+			<div class="fundolar-card">
+				<div class="fundolar-card__head">
+					<h2><?php esc_html_e( 'Fundolar Central setup', 'fundolar' ); ?></h2>
+				</div>
+				<div class="fundolar-card__body">
+					<ol class="fundolar-howto-steps">
+						<li>
+							<strong><?php esc_html_e( 'Configure gateways in Central', 'fundolar' ); ?></strong>
+							<?php esc_html_e( 'In Fundolar Central admin â†’ Settings â†’ Payments, enable gateways and enter API keys (Stripe, PayPal, Mobile Money UG, Paystack, Pesapal, Flutterwave).', 'fundolar' ); ?>
+						</li>
+						<li>
+							<strong><?php esc_html_e( 'Create a site key', 'fundolar' ); ?></strong>
+							<a href="<?php echo esc_url( Fundolar_Platform::PLATFORM_BASE_URL . '/owner/register' ); ?>" target="_blank" rel="noopener noreferrer"><?php esc_html_e( 'Register at Fundolar Central', 'fundolar' ); ?></a>
+							<?php esc_html_e( 'and add a WordPress site integration.', 'fundolar' ); ?>
+						</li>
+						<li>
+							<strong><?php esc_html_e( 'Connect in WordPress', 'fundolar' ); ?></strong>
+							<a href="<?php echo esc_url( $settings_url . '#payments' ); ?>"><?php esc_html_e( 'Fundolar â†’ Settings â†’ Payments', 'fundolar' ); ?></a>
+							<?php esc_html_e( 'â€” paste the site key, click Connect Fundolar Central, then Sync gateways.', 'fundolar' ); ?>
+						</li>
+						<li>
+							<strong><?php esc_html_e( 'Test a donation', 'fundolar' ); ?></strong>
+							<?php esc_html_e( 'Publish your page with the shortcode and complete a small test payment.', 'fundolar' ); ?>
+						</li>
+					</ol>
+				</div>
+			</div>
+
+			<div class="fundolar-card">
+				<div class="fundolar-card__head">
+					<h2><?php esc_html_e( 'Optional customization', 'fundolar' ); ?></h2>
+				</div>
+				<div class="fundolar-card__body">
+					<ul class="fundolar-howto-steps" style="list-style:disc;padding-left:1.25rem;">
+						<li><?php esc_html_e( 'General tab â€” currency and preset amounts.', 'fundolar' ); ?></li>
+						<li><?php esc_html_e( 'Layout tab â€” form style and brand colors.', 'fundolar' ); ?></li>
+						<li><?php esc_html_e( 'Advanced tab â€” admin and donor email notifications.', 'fundolar' ); ?></li>
+					</ul>
 				</div>
 			</div>
 			<div class="fundolar-card">
@@ -344,70 +387,7 @@ class Fundolar_Admin {
 				</div>
 
 				<div class="fundolar-tab-panel" data-panel="payments" role="tabpanel" aria-labelledby="fundolar-tab-payments" hidden aria-hidden="true">
-					<div class="fundolar-card">
-						<div class="fundolar-card__head">
-							<h2><?php esc_html_e( 'Payments connection', 'fundolar' ); ?></h2>
-						</div>
-						<div class="fundolar-card__body">
-							<table class="fundolar-cred-table" role="presentation">
-								<tbody>
-									<tr>
-										<th scope="row"><label for="fundolar_platform_site_key"><?php esc_html_e( 'Site key', 'fundolar' ); ?></label></th>
-										<td>
-											<input class="regular-text" name="platform_site_key" id="fundolar_platform_site_key" type="text" value="<?php echo esc_attr( isset( $s['platform_site_key'] ) ? $s['platform_site_key'] : '' ); ?>" placeholder="<?php esc_attr_e( 'lic_...', 'fundolar' ); ?>" autocomplete="off" />
-										</td>
-									</tr>
-									<tr>
-										<th scope="row"><?php esc_html_e( 'Connection state', 'fundolar' ); ?></th>
-										<td>
-											<?php if ( ! empty( $s['platform_api_key'] ) ) : ?>
-												<span class="fundolar-pill fundolar-pill--ok"><?php esc_html_e( 'Connected', 'fundolar' ); ?></span>
-											<?php else : ?>
-												<span class="fundolar-pill fundolar-pill--soon"><?php esc_html_e( 'Not connected', 'fundolar' ); ?></span>
-											<?php endif; ?>
-											<?php if ( ! empty( $s['platform_sync_error'] ) ) : ?>
-												<p class="description" style="color:#b32d2e;"><?php echo esc_html( $s['platform_sync_error'] ); ?></p>
-											<?php endif; ?>
-											<?php if ( ! empty( $s['platform_last_sync_at'] ) ) : ?>
-												<p class="description"><?php printf( esc_html__( 'Last synced: %s', 'fundolar' ), esc_html( $s['platform_last_sync_at'] ) ); ?></p>
-											<?php endif; ?>
-										</td>
-									</tr>
-									<tr>
-										<th scope="row"><?php esc_html_e( 'Withdrawal threshold', 'fundolar' ); ?></th>
-										<td>
-											<p><strong><?php echo esc_html( '$' . number_format_i18n( max( 100, (float) ( isset( $s['platform_withdraw_threshold'] ) ? $s['platform_withdraw_threshold'] : 100 ) ), 2 ) ); ?></strong></p>
-										</td>
-									</tr>
-									<tr>
-										<th scope="row"><?php esc_html_e( 'Payment methods', 'fundolar' ); ?></th>
-										<td>
-											<div class="fundolar-gateway-grid">
-												<?php foreach ( Fundolar_Payments::gateways() as $g ) : ?>
-													<span class="fundolar-gateway-tile">
-														<span class="fundolar-gateway-tile__inner">
-															<span class="fundolar-gateway-tile__row">
-																<span class="fundolar-gateway-tile__name"><?php echo esc_html( ucfirst( $g ) ); ?></span>
-																<?php if ( in_array( $g, (array) $s['enabled_gateways'], true ) && Fundolar_Payments::gateway_ready( $g ) ) : ?>
-																	<span class="fundolar-pill fundolar-pill--ok"><?php esc_html_e( 'Ready', 'fundolar' ); ?></span>
-																<?php else : ?>
-																	<span class="fundolar-pill fundolar-pill--soon"><?php esc_html_e( 'Not available', 'fundolar' ); ?></span>
-																<?php endif; ?>
-															</span>
-														</span>
-													</span>
-												<?php endforeach; ?>
-											</div>
-										</td>
-									</tr>
-								</tbody>
-							</table>
-							<p style="margin-top:1rem;">
-								<button type="submit" class="button button-primary" name="fundolar_connect_platform" value="1"><?php esc_html_e( 'Connect with site key', 'fundolar' ); ?></button>
-								<button type="submit" class="button" name="fundolar_sync_platform" value="1"><?php esc_html_e( 'Sync from central panel', 'fundolar' ); ?></button>
-							</p>
-						</div>
-					</div>
+					<?php self::render_payments_tab( $s ); ?>
 				</div>
 
 				<div class="fundolar-tab-panel" data-panel="layout" role="tabpanel" aria-labelledby="fundolar-tab-layout" hidden aria-hidden="true">
@@ -550,7 +530,7 @@ class Fundolar_Admin {
 						</div>
 						<hr class="fundolar-support-divider" />
 						<p class="fundolar-card__intro"><?php esc_html_e( 'Send a message from this site. It is delivered by email; a short confirmation appears here when it is queued.', 'fundolar' ); ?></p>
-						<div id="fundolar-support-thanks" class="fundolar-support-thanks" hidden role="status"><?php esc_html_e( 'Thank you — we have received your message.', 'fundolar' ); ?></div>
+						<div id="fundolar-support-thanks" class="fundolar-support-thanks" hidden role="status"><?php esc_html_e( 'Thank you â€” we have received your message.', 'fundolar' ); ?></div>
 						<form id="fundolar-support-form" class="fundolar-support-form" novalidate>
 							<table class="fundolar-cred-table" role="presentation">
 								<tbody>
@@ -558,7 +538,7 @@ class Fundolar_Admin {
 										<th scope="row"><label for="fundolar_support_type"><?php esc_html_e( 'Topic', 'fundolar' ); ?></label></th>
 										<td>
 											<select id="fundolar_support_type" name="support_type" required>
-												<option value=""><?php esc_html_e( 'Select…', 'fundolar' ); ?></option>
+												<option value=""><?php esc_html_e( 'Selectâ€¦', 'fundolar' ); ?></option>
 												<option value="feature_request"><?php esc_html_e( 'Request new feature', 'fundolar' ); ?></option>
 												<option value="general_inquiry"><?php esc_html_e( 'General inquiry', 'fundolar' ); ?></option>
 												<option value="custom_development"><?php esc_html_e( 'Custom development', 'fundolar' ); ?></option>
@@ -639,8 +619,8 @@ class Fundolar_Admin {
 								<th><?php esc_html_e( 'Date', 'fundolar' ); ?></th>
 								<th><?php esc_html_e( 'Donor', 'fundolar' ); ?></th>
 								<th><?php esc_html_e( 'Receipt (donor)', 'fundolar' ); ?></th>
-								<th><?php esc_html_e( 'Platform fee', 'fundolar' ); ?></th>
-								<th><?php esc_html_e( 'Net to site', 'fundolar' ); ?></th>
+								<th><?php esc_html_e( 'Platform fee (USD)', 'fundolar' ); ?></th>
+								<th><?php esc_html_e( 'Net to site (USD)', 'fundolar' ); ?></th>
 								<th><?php esc_html_e( 'Status', 'fundolar' ); ?></th>
 								<th><?php esc_html_e( 'Gateway', 'fundolar' ); ?></th>
 							</tr>
@@ -654,9 +634,9 @@ class Fundolar_Admin {
 										<td><?php echo esc_html( (string) $row['id'] ); ?></td>
 										<td><?php echo esc_html( $row['created_at'] ); ?></td>
 										<td><?php echo esc_html( $row['donor_name'] ); ?><br /><small><?php echo esc_html( $row['donor_email'] ); ?></small></td>
-										<td><?php echo esc_html( $row['currency'] . ' ' . number_format_i18n( (float) $row['receipt_amount_display'], 2 ) ); ?></td>
-										<td><?php echo esc_html( number_format_i18n( (float) $row['amount_platform_fee'], 4 ) ); ?></td>
-										<td><?php echo esc_html( number_format_i18n( (float) $row['amount_net'], 4 ) ); ?></td>
+										<td><?php echo esc_html( Fundolar_Ledger::receipt_label( $row ) ); ?></td>
+										<td><?php echo esc_html( 'USD ' . number_format_i18n( (float) $row['amount_platform_fee'], 4 ) ); ?></td>
+										<td><?php echo esc_html( 'USD ' . number_format_i18n( (float) $row['amount_net'], 4 ) ); ?></td>
 										<td><?php echo esc_html( $row['status'] ); ?></td>
 										<td><?php echo esc_html( $row['gateway'] ); ?><br /><small><?php echo esc_html( $row['gateway_ref'] ); ?></small></td>
 									</tr>
@@ -689,5 +669,148 @@ class Fundolar_Admin {
 			</div>
 		</div>
 		<?php
+	}
+
+	/**
+	 * Payments tab â€” Fundolar Central sync only.
+	 *
+	 * @param array $s Display settings.
+	 */
+	private static function render_payments_tab( array $s ) {
+		$fee_pct        = number_format( Fundolar_Fees::rate() * 100, 1 );
+		$central_active = Fundolar_Payments::is_central_connected();
+		$register_url   = Fundolar_Platform::PLATFORM_BASE_URL . '/owner/register';
+		$synced         = array_values( array_unique( array_map( 'sanitize_key', (array) ( $s['enabled_gateways'] ?? array() ) ) ) );
+		$ready          = Fundolar_Payments::gateways_ready_for_front();
+		?>
+		<div class="fundolar-fee-banner" role="note">
+			<span class="fundolar-fee-banner__icon dashicons dashicons-info" aria-hidden="true"></span>
+			<div class="fundolar-fee-banner__text">
+				<strong><?php esc_html_e( 'Platform fee', 'fundolar' ); ?></strong>
+				<?php
+				printf(
+					/* translators: %s: fee percentage e.g. 3.5 */
+					esc_html__( 'A %s%% platform fee is applied to each donation. Payment methods and API keys are managed in Fundolar Central and synced to this site.', 'fundolar' ),
+					esc_html( $fee_pct )
+				);
+				?>
+			</div>
+		</div>
+
+		<div class="fundolar-card">
+			<div class="fundolar-card__head">
+				<h2><?php esc_html_e( 'Fundolar Central', 'fundolar' ); ?></h2>
+				<?php if ( $central_active ) : ?>
+					<span class="fundolar-pill fundolar-pill--ok"><?php esc_html_e( 'Connected', 'fundolar' ); ?></span>
+				<?php endif; ?>
+			</div>
+			<div class="fundolar-card__body">
+				<p class="fundolar-card__intro">
+					<?php esc_html_e( 'Connect this WordPress site to Fundolar Central with your site key. Payment methods are configured by the platform administrator in Central — after you sync, active gateways appear on your donation form.', 'fundolar' ); ?>
+				</p>
+				<table class="fundolar-cred-table" role="presentation">
+					<tbody>
+						<tr>
+							<th scope="row"><label for="fundolar_platform_site_key"><?php esc_html_e( 'Site key', 'fundolar' ); ?></label></th>
+							<td>
+								<input class="regular-text" name="platform_site_key" id="fundolar_platform_site_key" type="text" value="<?php echo esc_attr( $s['platform_site_key'] ?? '' ); ?>" placeholder="<?php esc_attr_e( 'lic_...', 'fundolar' ); ?>" autocomplete="off" />
+								<p class="description">
+									<a href="<?php echo esc_url( $register_url ); ?>" target="_blank" rel="noopener noreferrer"><?php esc_html_e( 'Create a free Fundolar account', 'fundolar' ); ?></a>
+								</p>
+							</td>
+						</tr>
+						<tr>
+							<th scope="row"><?php esc_html_e( 'Synced gateways', 'fundolar' ); ?></th>
+							<td>
+								<?php if ( ! $central_active ) : ?>
+									<p class="description"><?php esc_html_e( 'Connect with your site key, then click Sync gateways.', 'fundolar' ); ?></p>
+								<?php elseif ( empty( $synced ) ) : ?>
+									<p class="description"><?php esc_html_e( 'No gateways are active in Central yet. Enable gateways in Central admin, then sync again.', 'fundolar' ); ?></p>
+								<?php else : ?>
+									<div class="fundolar-gateway-grid">
+										<?php foreach ( $synced as $g ) : ?>
+											<?php
+											$is_ready  = in_array( $g, $ready, true );
+											?>
+											<span class="fundolar-gateway-tile">
+												<span class="fundolar-gateway-tile__inner">
+													<span class="fundolar-gateway-tile__row">
+														<span class="fundolar-gateway-tile__name"><?php echo esc_html( Fundolar_Payments::gateway_label( $g ) ); ?></span>
+										<?php if ( $is_ready ) : ?>
+											<span class="fundolar-pill fundolar-pill--ok"><?php esc_html_e( 'Active', 'fundolar' ); ?></span>
+										<?php else : ?>
+											<span class="fundolar-pill fundolar-pill--soon"><?php esc_html_e( 'Awaiting Central setup', 'fundolar' ); ?></span>
+										<?php endif; ?>
+										<?php
+										$currencies = Fundolar_Payments::gateway_currencies( $g );
+										if ( ! empty( $currencies ) ) :
+											?>
+											<span class="description" style="display:block;margin-top:0.25rem;"><?php echo esc_html( implode( ', ', $currencies ) ); ?></span>
+										<?php endif; ?>
+													</span>
+												</span>
+											</span>
+										<?php endforeach; ?>
+									</div>
+								<?php endif; ?>
+							</td>
+						</tr>
+						<?php if ( ! empty( $s['platform_sync_error'] ) ) : ?>
+						<tr>
+							<th scope="row"><?php esc_html_e( 'Last error', 'fundolar' ); ?></th>
+							<td><p class="description" style="color:#b32d2e;"><?php echo esc_html( $s['platform_sync_error'] ); ?></p></td>
+						</tr>
+						<?php endif; ?>
+						<?php if ( ! empty( $s['platform_last_sync_at'] ) ) : ?>
+						<tr>
+							<th scope="row"><?php esc_html_e( 'Last synced', 'fundolar' ); ?></th>
+							<td><p class="description"><?php echo esc_html( $s['platform_last_sync_at'] ); ?></p></td>
+						</tr>
+						<?php endif; ?>
+					</tbody>
+				</table>
+				<p class="fundolar-connect-actions">
+					<button type="submit" class="button button-primary" name="fundolar_connect_platform" value="1"><?php esc_html_e( 'Connect Fundolar Central', 'fundolar' ); ?></button>
+					<button type="submit" class="button" name="fundolar_sync_platform" value="1"><?php esc_html_e( 'Sync gateways', 'fundolar' ); ?></button>
+				</p>
+			</div>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Append donation history sync summary to an admin success message.
+	 *
+	 * @param string               $message Base message.
+	 * @param array<string,int>|null $result  Optional sync result from Fundolar_Platform::sync_historical_donations().
+	 * @return string
+	 */
+	private static function append_historical_sync_message( $message, $result = null ) {
+		if ( null === $result ) {
+			$cached = get_transient( 'fundolar_last_historical_sync' );
+			if ( is_array( $cached ) ) {
+				delete_transient( 'fundolar_last_historical_sync' );
+				$result = $cached;
+			}
+		}
+		if ( ! is_array( $result ) || empty( $result['synced'] ) ) {
+			return $message;
+		}
+		$remaining = isset( $result['remaining'] ) ? (int) $result['remaining'] : 0;
+		if ( $remaining > 0 ) {
+			/* translators: 1: number synced, 2: number remaining */
+			$message .= ' ' . sprintf(
+				__( '%1$d past donations were synced to Central (%2$d remaining).', 'fundolar' ),
+				(int) $result['synced'],
+				$remaining
+			);
+		} else {
+			/* translators: %d: number of donations synced */
+			$message .= ' ' . sprintf(
+				__( '%d past donations were synced to Central.', 'fundolar' ),
+				(int) $result['synced']
+			);
+		}
+		return $message;
 	}
 }

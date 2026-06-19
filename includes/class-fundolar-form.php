@@ -64,8 +64,9 @@ class Fundolar_Form {
 			$amounts = array( 10, 20, 50, 100, 200 );
 		}
 		$default_sel    = $amounts[ min( 3, count( $amounts ) - 1 ) ];
-		$enabled_toggled = array_values( array_intersect( Fundolar_Payments::gateways(), (array) $s['enabled_gateways'] ) );
+		$enabled_toggled = array_values( array_unique( array_map( 'sanitize_key', (array) $s['enabled_gateways'] ) ) );
 		$enabled         = Fundolar_Payments::gateways_ready_for_front();
+		$has_mobile_ug   = in_array( 'mobile_money_ug', $enabled, true );
 		$first_gw        = isset( $enabled[0] ) ? $enabled[0] : '';
 		$layout          = isset( $s['form_layout'] ) ? sanitize_key( $s['form_layout'] ) : 'portrait';
 		if ( ! array_key_exists( $layout, Fundolar_Payments::form_layouts() ) ) {
@@ -114,6 +115,11 @@ class Fundolar_Form {
 									}
 									?>
 								</select>
+								<?php if ( in_array( 'mobile_money_ug', $enabled_toggled, true ) ) : ?>
+									<p class="fundolar-field__hint fundolar-currency-hint" id="fundolar-ugx-hint" <?php echo $has_mobile_ug ? 'hidden' : ''; ?>>
+										<?php esc_html_e( 'Select UGX to pay with Mobile Money (Uganda).', 'fundolar' ); ?>
+									</p>
+								<?php endif; ?>
 							</div>
 						</div>
 						<div class="fundolar-presets" role="group" aria-label="<?php esc_attr_e( 'Preset amounts', 'fundolar' ); ?>">
@@ -175,23 +181,45 @@ class Fundolar_Form {
 					<h3 class="fundolar-section__title" id="fundolar-pay-heading"><?php esc_html_e( 'Payment method', 'fundolar' ); ?></h3>
 					<div class="fundolar-gateways" role="radiogroup" aria-label="<?php esc_attr_e( 'Payment method', 'fundolar' ); ?>">
 						<?php foreach ( $enabled as $gw ) : ?>
-							<label class="fundolar-gateway">
+							<?php
+							$logo_url = Fundolar_Payments::gateway_logo_url( $gw );
+							$gw_label = Fundolar_Payments::gateway_label( $gw );
+							?>
+							<label class="fundolar-gateway" data-gateway="<?php echo esc_attr( $gw ); ?>">
 								<input type="radio" name="gateway" value="<?php echo esc_attr( $gw ); ?>" <?php checked( $gw, $first_gw ); ?> />
 								<span class="fundolar-gateway__tile">
-									<img src="<?php echo esc_url( FUNDOLAR_PLUGIN_URL . 'resources/images/logos/' . $gw . '.svg' ); ?>" alt="" loading="lazy" width="56" height="36" onerror="this.style.display='none';this.nextElementSibling.style.display='block';" />
-									<span class="fundolar-gateway__fallback" style="display:none"><?php echo esc_html( ucfirst( $gw ) ); ?></span>
+									<?php if ( '' !== $logo_url ) : ?>
+										<img src="<?php echo esc_url( $logo_url ); ?>" alt="<?php echo esc_attr( $gw_label ); ?>" loading="lazy" width="56" height="36" class="fundolar-gateway__logo" onerror="this.style.display='none';this.nextElementSibling.style.display='block';" />
+									<?php endif; ?>
+									<span class="fundolar-gateway__fallback" style="<?php echo '' !== $logo_url ? 'display:none' : ''; ?>"><?php echo esc_html( $gw_label ); ?></span>
 								</span>
+								<span class="fundolar-gateway__currency-hint" hidden></span>
 							</label>
 						<?php endforeach; ?>
 					</div>
 				</section>
 				<?php elseif ( ! empty( $enabled_toggled ) ) : ?>
-					<p class="fundolar-notice"><?php esc_html_e( 'Payment setup is still completing. Please try again shortly.', 'fundolar' ); ?></p>
+					<p class="fundolar-notice">
+						<?php
+						if ( in_array( 'mobile_money_ug', $enabled_toggled, true ) && ! in_array( 'mobile_money_ug', $enabled, true ) ) {
+							esc_html_e( 'Mobile Money (UG) is enabled in Central but credentials have not synced yet. Open Fundolar → Settings → Payments and click Sync gateways.', 'fundolar' );
+						} else {
+							esc_html_e( 'Payment setup is still completing. Please try again shortly.', 'fundolar' );
+						}
+						?>
+					</p>
 				<?php else : ?>
-					<p class="fundolar-notice"><?php esc_html_e( 'No payment methods are enabled. Please contact the site administrator.', 'fundolar' ); ?></p>
+					<p class="fundolar-notice"><?php esc_html_e( 'No payment methods are available. Connect Fundolar Central under Settings → Payments and sync gateways.', 'fundolar' ); ?></p>
 				<?php endif; ?>
 				<div id="fundolar-card-element" class="fundolar-stripe-wrap" hidden></div>
 				<div id="fundolar-paypal-container" class="fundolar-paypal-wrap" hidden></div>
+				<div id="fundolar-mobile-money-wrap" class="fundolar-mobile-money-wrap" hidden>
+					<div class="fundolar-field">
+						<label class="fundolar-field__label" for="fundolar-mobile-phone"><?php esc_html_e( 'Mobile Money phone (Uganda)', 'fundolar' ); ?> <abbr class="fundolar-required" title="<?php esc_attr_e( 'required', 'fundolar' ); ?>">*</abbr></label>
+						<input type="tel" id="fundolar-mobile-phone" class="fundolar-input" inputmode="tel" autocomplete="tel" placeholder="<?php esc_attr_e( 'e.g. 0771234567', 'fundolar' ); ?>" />
+						<p class="fundolar-field__hint"><?php esc_html_e( 'MTN or Airtel number. You will receive a prompt on your phone to approve payment.', 'fundolar' ); ?></p>
+					</div>
+				</div>
 				<div id="fundolar-message" class="fundolar-message" role="status" aria-live="polite"></div>
 				<button type="submit" class="fundolar-submit" <?php echo empty( $enabled ) ? 'disabled' : ''; ?>>
 					<?php esc_html_e( 'Donate', 'fundolar' ); ?>

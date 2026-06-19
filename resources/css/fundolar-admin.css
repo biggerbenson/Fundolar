@@ -752,3 +752,246 @@
 	margin: 0.5rem 0 0;
 	vertical-align: baseline;
 }
+
+.fundolar-howto-subhead {
+	font-size: 14px;
+	margin: 1.25rem 0 0.5rem;
+	color: #2b88b1;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Dashboard admin notices (rebrand + Central onboarding) */
+/* ------------------------------------------------------------------------- */
+
+.fundolar-admin-notice {
+	border-left-width: 4px;
+	padding: 0;
+}
+
+.fundolar-admin-notice--rebrand {
+	border-left-color: #2b88b1;
+	background: #f6fafc;
+}
+
+.fundolar-admin-notice--connect {
+	border-left-color: #28a745;
+	background: #f6fbf7;
+}
+
+.fundolar-admin-notice__inner {
+	display: flex;
+	align-items: flex-start;
+	gap: 12px;
+	padding: 12px 38px 12px 14px;
+}
+
+.fundolar-admin-notice__icon {
+	flex-shrink: 0;
+	width: 36px;
+	height: 36px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 50%;
+	font-size: 18px;
+	line-height: 1;
+	margin-top: 2px;
+}
+
+.fundolar-admin-notice--rebrand .fundolar-admin-notice__icon {
+	background: rgba(43, 136, 177, 0.12);
+	color: #2b88b1;
+}
+
+.fundolar-admin-notice--connect .fundolar-admin-notice__icon {
+	background: rgba(40, 167, 69, 0.12);
+	color: #28a745;
+}
+
+.fundolar-admin-notice__body {
+	flex: 1;
+	min-width: 0;
+}
+
+.fundolar-admin-notice__title {
+	margin: 0 0 4px;
+	font-size: 14px;
+	font-weight: 600;
+	color: #1d2327;
+	line-height: 1.4;
+}
+
+.fundolar-admin-notice__text {
+	margin: 0;
+	font-size: 13px;
+	color: #50575e;
+	line-height: 1.5;
+	max-width: 52rem;
+}
+
+.fundolar-admin-notice__actions {
+	margin: 10px 0 0;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+}
+
+.fundolar-admin-notice__link {
+	font-size: 13px;
+	text-decoration: none;
+	margin-left: 4px;
+}
+
+.fundolar-admin-notice__link:hover {
+	text-decoration: underline;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Payment mode selector (Settings → Payments) */
+/* ------------------------------------------------------------------------- */
+
+.fundolar-fee-banner {
+	display: flex;
+	align-items: flex-start;
+	gap: 10px;
+	padding: 12px 14px;
+	margin-bottom: 16px;
+	border-radius: 6px;
+	border: 1px solid rgba(43, 136, 177, 0.25);
+	background: linear-gradient(135deg, #f6fafc 0%, #f0f7fb 100%);
+}
+
+.fundolar-fee-banner__icon {
+	color: #2b88b1;
+	margin-top: 2px;
+}
+
+.fundolar-fee-banner__text {
+	font-size: 13px;
+	line-height: 1.5;
+	color: #50575e;
+}
+
+.fundolar-fee-banner__text strong {
+	color: #1d2327;
+}
+
+.fundolar-payment-modes {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 12px;
+	margin-bottom: 20px;
+}
+
+@media (max-width: 782px) {
+	.fundolar-payment-modes {
+		grid-template-columns: 1fr;
+	}
+}
+
+.fundolar-mode-card {
+	display: block;
+	cursor: pointer;
+	border: 2px solid #dcdcde;
+	border-radius: 8px;
+	background: #fff;
+	transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.fundolar-mode-card:hover {
+	border-color: #2b88b1;
+}
+
+.fundolar-mode-card.is-selected {
+	border-color: #2b88b1;
+	box-shadow: 0 0 0 1px #2b88b1;
+	background: #f6fafc;
+}
+
+.fundolar-mode-card__input {
+	position: absolute;
+	opacity: 0;
+	pointer-events: none;
+}
+
+.fundolar-mode-card__body {
+	display: block;
+	padding: 14px 16px;
+}
+
+.fundolar-mode-card__title {
+	display: block;
+	font-size: 14px;
+	font-weight: 600;
+	color: #1d2327;
+	margin-bottom: 4px;
+}
+
+.fundolar-mode-card__desc {
+	display: block;
+	font-size: 12px;
+	color: #50575e;
+	line-height: 1.45;
+}
+
+.fundolar-mode-card__badge {
+	display: inline-block;
+	margin-top: 8px;
+	padding: 2px 8px;
+	font-size: 11px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.02em;
+	border-radius: 999px;
+	background: rgba(40, 167, 69, 0.12);
+	color: #28a745;
+}
+
+.fundolar-payment-panel[hidden] {
+	display: none !important;
+}
+
+.fundolar-card__head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.fundolar-connect-actions {
+	margin: 0 0 4px;
+}
+
+.fundolar-or-divider {
+	position: relative;
+	text-align: center;
+	margin: 16px 0;
+	color: #787c82;
+	font-size: 12px;
+}
+
+.fundolar-or-divider::before {
+	content: '';
+	position: absolute;
+	left: 0;
+	right: 0;
+	top: 50%;
+	border-top: 1px solid #dcdcde;
+}
+
+.fundolar-or-divider span {
+	position: relative;
+	background: #fff;
+	padding: 0 10px;
+}
+
+.fundolar-connect-btn {
+	background: #2b88b1 !important;
+	border-color: #2579a0 !important;
+}
+
+.fundolar-connect-btn:hover {
+	background: #2579a0 !important;
+}

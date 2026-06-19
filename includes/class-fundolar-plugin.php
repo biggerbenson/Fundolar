@@ -36,8 +36,13 @@ class Fundolar_Plugin {
 	 */
 	private function __construct() {
 		Fundolar_Plugin_Information::init();
+		add_action( 'plugins_loaded', array( 'Fundolar_Migration', 'boot' ), 5 );
 		add_action( 'init', array( $this, 'load_i18n' ) );
 		add_action( 'init', array( $this, 'register_shortcode' ) );
+		add_action( 'admin_init', array( $this, 'maybe_sync_historical_donations' ) );
+		add_action( 'admin_init', array( $this, 'maybe_sync_gateways_admin' ) );
+		add_action( 'admin_init', array( $this, 'maybe_sync_pending_deletions' ) );
+		add_action( 'fundolar_platform_heartbeat', array( 'Fundolar_Platform', 'run_heartbeat' ) );
 		add_action( 'rest_api_init', array( 'Fundolar_REST', 'register' ) );
 		add_action( 'wp_enqueue_scripts', array( $this, 'enqueue_public' ) );
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_admin' ) );
@@ -53,16 +58,21 @@ class Fundolar_Plugin {
 	 * Activation: DB table.
 	 */
 	public static function activate() {
+		Fundolar_Migration::boot();
 		Fundolar_DB::create_tables();
 		if ( ! get_option( Fundolar_Payments::OPTION ) ) {
 			update_option(
 				Fundolar_Payments::OPTION,
 				array(
-					'enabled_gateways'   => array( 'stripe', 'paypal', 'pesapal', 'flutterwave', 'paystack' ),
+					'enabled_gateways'   => array(),
+					'payment_mode'       => Fundolar_Payments::MODE_CENTRAL,
 					'preset_amounts'     => array( 10, 20, 50, 100, 200 ),
 					'platform_base_url' => Fundolar_Platform::PLATFORM_BASE_URL,
 				)
 			);
+		}
+		if ( ! wp_next_scheduled( 'fundolar_platform_heartbeat' ) ) {
+			wp_schedule_event( time() + 300, 'hourly', 'fundolar_platform_heartbeat' );
 		}
 	}
 
@@ -85,6 +95,7 @@ class Fundolar_Plugin {
 	 */
 	public function register_shortcode() {
 		add_shortcode( 'fundolar_donate', array( 'Fundolar_Form', 'shortcode' ) );
+		add_shortcode( Fundolar_Migration::LEGACY_SHORTCODE, array( 'Fundolar_Form', 'shortcode' ) );
 	}
 
 	/**
@@ -94,7 +105,8 @@ class Fundolar_Plugin {
 	 * @return bool
 	 */
 	public static function post_needs_form_assets( WP_Post $post ) {
-		if ( has_shortcode( $post->post_content, 'fundolar_donate' ) ) {
+		if ( has_shortcode( $post->post_content, 'fundolar_donate' )
+			|| has_shortcode( $post->post_content, Fundolar_Migration::LEGACY_SHORTCODE ) ) {
 			return true;
 		}
 		if ( function_exists( 'has_blocks' ) && has_blocks( $post->post_content ) && function_exists( 'parse_blocks' ) ) {
@@ -115,7 +127,8 @@ class Fundolar_Plugin {
 				continue;
 			}
 			if ( 'core/shortcode' === $block['blockName'] && ! empty( $block['innerHTML'] )
-				&& false !== strpos( $block['innerHTML'], 'fundolar_donate' ) ) {
+				&& ( false !== strpos( $block['innerHTML'], 'fundolar_donate' )
+					|| false !== strpos( $block['innerHTML'], Fundolar_Migration::LEGACY_SHORTCODE ) ) ) {
 				return true;
 			}
 			if ( ! empty( $block['innerBlocks'] ) && self::blocks_contain_fundolar_shortcode( $block['innerBlocks'] ) ) {
@@ -131,6 +144,7 @@ class Fundolar_Plugin {
 	 * @param string $return_url Preferred return URL after hosted checkout (fallback if JS cannot read location).
 	 */
 	public static function enqueue_form_assets( $return_url = '' ) {
+		Fundolar_Platform::maybe_sync_gateways();
 		wp_enqueue_style(
 			'fundolar-form',
 			FUNDOLAR_PLUGIN_URL . 'resources/css/fundolar-form.css',
@@ -158,6 +172,8 @@ class Fundolar_Plugin {
 				'stripePk'     => $s['stripe_publishable'],
 				'paypalClient' => $s['paypal_client_id'],
 				'enabled'      => Fundolar_Payments::gateways_ready_for_front(),
+				'syncedGateways' => array_values( array_unique( array_map( 'sanitize_key', (array) ( $s['enabled_gateways'] ?? array() ) ) ) ),
+				'gatewayMeta'  => Fundolar_Payments::synced_gateway_meta(),
 				'pesapalCurrencies' => Fundolar_Payments::pesapal_supported_currencies(),
 				'fxBaseCurrency' => 'USD',
 				'fxRates'      => Fundolar_Payments::fx_rates_usd_base(),
@@ -174,7 +190,12 @@ class Fundolar_Plugin {
 					'validation' => __( 'Please complete your name, email, and amount before continuing.', 'fundolar' ),
 					'paystackKesOnly' => __( 'Paystack checkout is currently available only for KES.', 'fundolar' ),
 					'pesapalCurrencyOnly' => __( 'Pesapal checkout is available only for mobile-money enabled currencies.', 'fundolar' ),
-					'needsKeys' => __( 'This payment method is not ready yet. Enter your site key under Fundolar → Settings → Payments and connect.', 'fundolar' ),
+					'mobileMoneyUgxOnly' => __( 'Mobile Money (UG) is available only for UGX.', 'fundolar' ),
+					'mobileMoneyPhone' => __( 'Enter your Uganda mobile money phone number.', 'fundolar' ),
+					'mobileMoneyPending' => __( 'Check your phone and approve the Mobile Money prompt…', 'fundolar' ),
+					'mobileMoneyFailed' => __( 'Mobile Money payment was not completed.', 'fundolar' ),
+					'switchCurrencyForGateway' => __( 'Use %s', 'fundolar' ),
+					'needsKeys' => __( 'This payment method is not available right now. Ask your platform admin to enable it in Fundolar Central, then sync gateways.', 'fundolar' ),
 				),
 			)
 		);
@@ -251,10 +272,16 @@ class Fundolar_Plugin {
 	 * Gateway return handling.
 	 */
 	public function gateway_returns() {
-		if ( empty( $_GET['fundolar_gateway'] ) ) {
+		$gateway_param = '';
+		if ( ! empty( $_GET['fundolar_gateway'] ) ) {
+			$gateway_param = 'fundolar_gateway';
+		} elseif ( ! empty( $_GET[ Fundolar_Migration::LEGACY_GATEWAY_PARAM ] ) ) {
+			$gateway_param = Fundolar_Migration::LEGACY_GATEWAY_PARAM;
+		}
+		if ( '' === $gateway_param ) {
 			return;
 		}
-		$g = isset( $_GET['fundolar_gateway'] ) ? sanitize_key( wp_unslash( $_GET['fundolar_gateway'] ) ) : '';
+		$g = isset( $_GET[ $gateway_param ] ) ? sanitize_key( wp_unslash( $_GET[ $gateway_param ] ) ) : '';
 		if ( 'paystack' === $g ) {
 			$ref = '';
 			if ( isset( $_GET['reference'] ) ) {
@@ -265,7 +292,7 @@ class Fundolar_Plugin {
 			if ( $ref ) {
 				Fundolar_Payments::paystack_verify_and_update( $ref );
 			}
-			wp_safe_redirect( remove_query_arg( array( 'fundolar_gateway', 'reference', 'trxref' ) ) );
+			wp_safe_redirect( remove_query_arg( array( 'fundolar_gateway', Fundolar_Migration::LEGACY_GATEWAY_PARAM, 'reference', 'trxref' ) ) );
 			exit;
 		}
 		if ( 'flutterwave' === $g ) {
@@ -274,7 +301,7 @@ class Fundolar_Plugin {
 			if ( $tx && $tid ) {
 				Fundolar_Payments::flutterwave_verify_and_update( $tx, $tid );
 			}
-			wp_safe_redirect( remove_query_arg( array( 'fundolar_gateway', 'tx_ref', 'transaction_id', 'status' ) ) );
+			wp_safe_redirect( remove_query_arg( array( 'fundolar_gateway', Fundolar_Migration::LEGACY_GATEWAY_PARAM, 'tx_ref', 'transaction_id', 'status' ) ) );
 			exit;
 		}
 		if ( 'pesapal' === $g ) {
@@ -283,8 +310,70 @@ class Fundolar_Plugin {
 			if ( $tracking ) {
 				Fundolar_Payments::pesapal_verify_and_update( $tracking, $reference );
 			}
-			wp_safe_redirect( remove_query_arg( array( 'fundolar_gateway', 'OrderTrackingId', 'OrderMerchantReference', 'OrderNotificationType' ) ) );
+			wp_safe_redirect( remove_query_arg( array( 'fundolar_gateway', Fundolar_Migration::LEGACY_GATEWAY_PARAM, 'OrderTrackingId', 'OrderMerchantReference', 'OrderNotificationType' ) ) );
 			exit;
+		}
+	}
+
+	/**
+	 * Refresh gateway settings when viewing Fundolar admin screens.
+	 */
+	public function maybe_sync_gateways_admin() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		$page = isset( $_GET['page'] ) ? sanitize_key( wp_unslash( $_GET['page'] ) ) : '';
+		if ( '' === $page || false === strpos( $page, 'fundolar' ) ) {
+			return;
+		}
+		Fundolar_Platform::maybe_sync_gateways();
+	}
+
+	/**
+	 * Pull Central donation deletions into the local transaction log.
+	 */
+	public function maybe_sync_pending_deletions() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		if ( ! Fundolar_Payments::is_central_connected() ) {
+			return;
+		}
+		if ( get_transient( 'fundolar_deletion_sync_lock' ) ) {
+			return;
+		}
+		set_transient( 'fundolar_deletion_sync_lock', 1, 120 );
+		Fundolar_Platform::sync_pending_deletions();
+		Fundolar_Platform::reconcile_central_usd_ledger( 50 );
+	}
+
+	/**
+	 * Background sync for sites connected after a legacy import.
+	 */
+	public function maybe_sync_historical_donations() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		if ( ! Fundolar_Migration::pending_central_sync() ) {
+			return;
+		}
+		$s = Fundolar_Payments::get_settings();
+		if ( empty( $s['platform_api_key'] ) ) {
+			return;
+		}
+		$result = Fundolar_Platform::sync_historical_donations( 25 );
+		if ( is_wp_error( $result ) ) {
+			return;
+		}
+		if ( ! empty( $result['synced'] ) ) {
+			set_transient(
+				'fundolar_central_sync_notice',
+				array(
+					'synced'    => (int) $result['synced'],
+					'remaining' => (int) $result['remaining'],
+				),
+				120
+			);
 		}
 	}
 

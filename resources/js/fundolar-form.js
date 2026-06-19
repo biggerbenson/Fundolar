@@ -43,6 +43,15 @@
 				if (d && d.rest_nonce) {
 					cfg.restNonce = d.rest_nonce;
 				}
+				if (d && Array.isArray(d.enabled)) {
+					cfg.enabled = d.enabled;
+				}
+				if (d && d.gatewayMeta && typeof d.gatewayMeta === 'object') {
+					cfg.gatewayMeta = d.gatewayMeta;
+				}
+				if (d && typeof d.platformFeeRate === 'number') {
+					cfg.platformFeeRate = d.platformFeeRate;
+				}
 				nonceExpiresAt = Date.now() + NONCE_TTL_MS;
 			})
 			.catch(function () {
@@ -137,6 +146,8 @@
 		var msgEl = $('#fundolar-message', root);
 		var cardWrap = $('#fundolar-card-element', root);
 		var paypalWrap = $('#fundolar-paypal-container', root);
+		var mobileWrap = $('#fundolar-mobile-money-wrap', root);
+		var mobilePhone = $('#fundolar-mobile-phone', root);
 		var submitBtn = $('.fundolar-submit', root);
 		var stripeInstance = null;
 		var cardElement = null;
@@ -394,39 +405,66 @@
 			return true;
 		}
 
+		function gatewayAllowsCurrency(gatewayId, currency) {
+			var meta = cfg.gatewayMeta && cfg.gatewayMeta[gatewayId];
+			if (!meta || !Array.isArray(meta.currencies) || meta.currencies.length === 0) {
+				return true;
+			}
+			return meta.currencies
+				.map(function (c) {
+					return String(c || '').trim().toUpperCase();
+				})
+				.indexOf(currency) !== -1;
+		}
+
+		function gatewayCurrencyHint(gatewayId) {
+			var meta = cfg.gatewayMeta && cfg.gatewayMeta[gatewayId];
+			if (!meta || !Array.isArray(meta.currencies) || meta.currencies.length === 0) {
+				return '';
+			}
+			return meta.currencies
+				.map(function (c) {
+					return String(c || '').trim().toUpperCase();
+				})
+				.join(', ');
+		}
+
 		function refreshGatewayAvailabilityByCurrency() {
 			var currency = ($('#fundolar-currency', root).value || '').trim().toUpperCase();
-			var allowPaystack = currency === 'KES';
-			var pesapalList = Array.isArray(cfg.pesapalCurrencies)
-				? cfg.pesapalCurrencies.map(function (c) {
-						return String(c || '').trim().toUpperCase();
-				  })
-				: ['UGX', 'KES', 'TZS', 'NGN', 'GHS', 'RWF', 'ZMW', 'MWK', 'BIF'];
-			var allowPesapal = pesapalList.indexOf(currency) !== -1;
 			var selectedInput = form.querySelector('input[name="gateway"]:checked');
+			var ugxHint = $('#fundolar-ugx-hint', root);
 			form.querySelectorAll('input[name="gateway"]').forEach(function (input) {
 				var tile = input.closest('.fundolar-gateway');
-				if (input.value === 'paystack' && !allowPaystack) {
+				var hint = tile ? tile.querySelector('.fundolar-gateway__currency-hint') : null;
+				var allowed = gatewayAllowsCurrency(input.value, currency);
+				if (!allowed) {
 					input.checked = false;
 					input.disabled = true;
 					if (tile) {
-						tile.style.display = 'none';
-					}
-					return;
-				}
-				if (input.value === 'pesapal' && !allowPesapal) {
-					input.checked = false;
-					input.disabled = true;
-					if (tile) {
-						tile.style.display = 'none';
+						tile.classList.add('fundolar-gateway--locked');
+						var codes = gatewayCurrencyHint(input.value);
+						if (hint && codes) {
+							hint.textContent = (cfg.i18n.switchCurrencyForGateway || 'Use %s').replace('%s', codes);
+							hint.hidden = false;
+						}
 					}
 					return;
 				}
 				input.disabled = false;
 				if (tile) {
-					tile.style.display = '';
+					tile.classList.remove('fundolar-gateway--locked');
+					if (hint) {
+						hint.textContent = '';
+						hint.hidden = true;
+					}
 				}
 			});
+			if (ugxHint) {
+				var mobileSynced =
+					(Array.isArray(cfg.syncedGateways) && cfg.syncedGateways.indexOf('mobile_money_ug') !== -1) ||
+					(Array.isArray(cfg.enabled) && cfg.enabled.indexOf('mobile_money_ug') !== -1);
+				ugxHint.hidden = !mobileSynced || currency === 'UGX';
+			}
 			if (!selectedInput || selectedInput.disabled) {
 				var fallback = form.querySelector('input[name="gateway"]:not(:disabled)');
 				if (fallback) {
@@ -567,12 +605,36 @@
 				.render('#fundolar-paypal-container');
 		}
 
+		function pollMarzpayStatus(transactionId, attempt) {
+			var maxAttempts = 60;
+			var delayMs = 3000;
+			if (attempt >= maxAttempts) {
+				throw new Error(cfg.i18n.mobileMoneyFailed || cfg.i18n.error);
+			}
+			return apiPost('marzpay/status', { transaction_id: transactionId }).then(function (data) {
+				if (data && data.completed) {
+					return data;
+				}
+				if (data && data.status === 'failed') {
+					throw new Error(cfg.i18n.mobileMoneyFailed || cfg.i18n.error);
+				}
+				return new Promise(function (resolve, reject) {
+					setTimeout(function () {
+						pollMarzpayStatus(transactionId, attempt + 1).then(resolve).catch(reject);
+					}, delayMs);
+				});
+			});
+		}
+
 		function onGatewayChange() {
 			refreshGatewayAvailabilityByCurrency();
 			var g = selectedGateway();
 			destroyStripeUi();
 			paypalWrap.innerHTML = '';
 			paypalWrap.hidden = true;
+			if (mobileWrap) {
+				mobileWrap.hidden = g !== 'mobile_money_ug';
+			}
 			submitBtn.hidden = false;
 			paypalRendered = false;
 
@@ -705,8 +767,8 @@
 			}
 
 			if (g === 'paystack' || g === 'flutterwave') {
-				if (g === 'paystack' && currency !== 'KES') {
-					setMsg(cfg.i18n.paystackKesOnly || cfg.i18n.error, 'is-error');
+				if (!gatewayAllowsCurrency(g, currency)) {
+					setMsg(cfg.i18n.error, 'is-error');
 					return;
 				}
 				submitBtn.disabled = true;
@@ -733,12 +795,7 @@
 			}
 
 			if (g === 'pesapal') {
-				var allowedPesapalCurrencies = Array.isArray(cfg.pesapalCurrencies)
-					? cfg.pesapalCurrencies.map(function (c) {
-							return String(c || '').trim().toUpperCase();
-					  })
-					: ['UGX', 'KES', 'TZS', 'NGN', 'GHS', 'RWF', 'ZMW', 'MWK', 'BIF'];
-				if (allowedPesapalCurrencies.indexOf(currency) === -1) {
+				if (!gatewayAllowsCurrency(g, currency)) {
 					setMsg(cfg.i18n.pesapalCurrencyOnly || cfg.i18n.error, 'is-error');
 					return;
 				}
@@ -760,6 +817,45 @@
 					})
 					.catch(function (err) {
 						setMsg(err.message || cfg.i18n.error, 'is-error');
+						submitBtn.disabled = false;
+					});
+				return;
+			}
+
+			if (g === 'mobile_money_ug') {
+				if (!gatewayAllowsCurrency(g, currency)) {
+					setMsg(cfg.i18n.mobileMoneyUgxOnly || cfg.i18n.error, 'is-error');
+					return;
+				}
+				var phone = mobilePhone ? mobilePhone.value.trim() : '';
+				if (!phone) {
+					setMsg(cfg.i18n.mobileMoneyPhone || cfg.i18n.validation || cfg.i18n.error, 'is-error');
+					return;
+				}
+				submitBtn.disabled = true;
+				apiPost('init-payment', {
+					gateway: 'mobile_money_ug',
+					name: name,
+					email: email,
+					amount: amount,
+					currency: currency,
+					phone_number: phone,
+					return_url: getReturnUrl(),
+				})
+					.then(function (data) {
+						if (!data || !data.transaction_id) {
+							throw new Error(cfg.i18n.error);
+						}
+						setMsg(cfg.i18n.mobileMoneyPending || cfg.i18n.loading, '');
+						return pollMarzpayStatus(data.transaction_id, 0);
+					})
+					.then(function () {
+						setMsg(cfg.i18n.success, 'is-success');
+					})
+					.catch(function (err) {
+						setMsg(err.message || cfg.i18n.error, 'is-error');
+					})
+					.finally(function () {
 						submitBtn.disabled = false;
 					});
 				return;

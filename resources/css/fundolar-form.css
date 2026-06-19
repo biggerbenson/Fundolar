@@ -528,10 +528,15 @@
 	box-shadow: 0 0 0 2px color-mix(in srgb, var(--fundolar-accent) 70%, transparent);
 }
 
-.fundolar-gateway__tile img {
-	max-width: 100%;
-	height: auto;
+.fundolar-gateway__tile img,
+.fundolar-gateway__logo {
+	display: block;
+	width: 100%;
+	max-width: 56px;
+	height: 36px;
+	margin: 0 auto;
 	object-fit: contain;
+	object-position: center;
 }
 
 .fundolar-gateway__fallback {
@@ -539,6 +544,27 @@
 	font-weight: 700;
 	color: var(--fundolar-primary);
 	text-align: center;
+}
+
+.fundolar-gateway--locked .fundolar-gateway__tile {
+	opacity: 0.45;
+	filter: grayscale(0.35);
+}
+
+.fundolar-gateway__currency-hint {
+	display: block;
+	font-size: 0.7rem;
+	color: #6b7280;
+	text-align: center;
+	margin-top: 0.2rem;
+	max-width: 5.5rem;
+	line-height: 1.2;
+}
+
+.fundolar-currency-hint {
+	margin: 0.35rem 0 0;
+	font-size: 0.8rem;
+	color: #6b7280;
 }
 
 .fundolar-stripe-wrap,

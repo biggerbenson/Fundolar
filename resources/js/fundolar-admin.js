@@ -236,6 +236,81 @@
 		});
 	}
 
+	function initPaymentModePanels(root) {
+		if (!root) {
+			return;
+		}
+		var radios = root.querySelectorAll('.fundolar-mode-card__input');
+		var panels = root.querySelectorAll('[data-fundolar-payment-panel]');
+		var cards = root.querySelectorAll('.fundolar-mode-card');
+		if (!radios.length) {
+			return;
+		}
+		function syncPanels() {
+			var mode = 'own_keys';
+			radios.forEach(function (r) {
+				if (r.checked) {
+					mode = r.value;
+				}
+			});
+			cards.forEach(function (c) {
+				var input = c.querySelector('.fundolar-mode-card__input');
+				c.classList.toggle('is-selected', input && input.checked);
+			});
+			panels.forEach(function (p) {
+				var show = p.getAttribute('data-fundolar-payment-panel') === mode;
+				p.hidden = !show;
+			});
+		}
+		radios.forEach(function (r) {
+			r.addEventListener('change', syncPanels);
+		});
+		var centralLink = root.querySelector('.fundolar-switch-central-link');
+		if (centralLink) {
+			centralLink.addEventListener('click', function (e) {
+				e.preventDefault();
+				radios.forEach(function (r) {
+					if (r.value === 'central') {
+						r.checked = true;
+					}
+				});
+				syncPanels();
+				var payTab = root.querySelector('[data-tab="payments"]');
+				if (payTab) {
+					payTab.click();
+				}
+			});
+		}
+		syncPanels();
+	}
+
+	function initAdminNoticeDismiss() {
+		document.addEventListener('click', function (e) {
+			var dismissBtn = e.target && e.target.closest ? e.target.closest('.notice-dismiss') : null;
+			if (!dismissBtn) {
+				return;
+			}
+			var wrap = dismissBtn.closest('.fundolar-admin-notice[data-fundolar-dismiss]');
+			if (!wrap) {
+				return;
+			}
+			var noticeType = wrap.getAttribute('data-fundolar-dismiss');
+			if (!noticeType) {
+				return;
+			}
+			var body = new URLSearchParams();
+			body.append('action', 'fundolar_dismiss_admin_notice');
+			body.append('notice_type', noticeType);
+			body.append('nonce', fundolarAdminL10n.supportNonce);
+			fetch(fundolarAdminL10n.ajaxUrl, {
+				method: 'POST',
+				credentials: 'same-origin',
+				headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+				body: body.toString()
+			}).catch(function () {});
+		});
+	}
+
 	document.addEventListener('DOMContentLoaded', function () {
 		var root = document.querySelector('.fundolar-settings-wrap');
 		if (root) {
@@ -245,5 +320,8 @@
 			initSupportForm();
 		}
 		initCopyButtons();
+		if (typeof fundolarAdminL10n !== 'undefined') {
+			initAdminNoticeDismiss();
+		}
 	});
 })();

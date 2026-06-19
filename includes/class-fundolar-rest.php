@@ -34,7 +34,7 @@ class Fundolar_REST {
 			array(
 				'methods'             => 'POST',
 				'callback'            => array( __CLASS__, 'init_payment' ),
-				'permission_callback' => '__return_true',
+				'permission_callback' => array( __CLASS__, 'permission_donate_request' ),
 				'args'                => array(
 					'nonce'    => array(
 						'type'              => 'string',
@@ -67,6 +67,10 @@ class Fundolar_REST {
 						'type'              => 'string',
 						'sanitize_callback' => 'esc_url_raw',
 					),
+					'phone_number' => array(
+						'type'              => 'string',
+						'sanitize_callback' => 'sanitize_text_field',
+					),
 				),
 			)
 		);
@@ -77,7 +81,7 @@ class Fundolar_REST {
 			array(
 				'methods'             => 'POST',
 				'callback'            => array( __CLASS__, 'paypal_capture' ),
-				'permission_callback' => '__return_true',
+				'permission_callback' => array( __CLASS__, 'permission_donate_request' ),
 				'args'                => array(
 					'nonce'    => array(
 						'type'              => 'string',
@@ -109,7 +113,7 @@ class Fundolar_REST {
 			array(
 				'methods'             => 'POST',
 				'callback'            => array( __CLASS__, 'stripe_sync_intent' ),
-				'permission_callback' => '__return_true',
+				'permission_callback' => array( __CLASS__, 'permission_donate_request' ),
 				'args'                => array(
 					'nonce'           => array(
 						'type'              => 'string',
@@ -125,12 +129,43 @@ class Fundolar_REST {
 			)
 		);
 
+		register_rest_route(
+			self::NS,
+			'/webhooks/marzpay',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'webhook_marzpay' ),
+				'permission_callback' => '__return_true',
+			)
+		);
+
+		register_rest_route(
+			self::NS,
+			'/marzpay/status',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'marzpay_status' ),
+				'permission_callback' => array( __CLASS__, 'permission_donate_request' ),
+				'args'                => array(
+					'nonce'          => array(
+						'type'              => 'string',
+						'required'          => false,
+						'sanitize_callback' => array( __CLASS__, 'sanitize_nonce_param' ),
+					),
+					'transaction_id' => array(
+						'type'              => 'integer',
+						'required'          => true,
+					),
+				),
+			)
+		);
+
 		add_filter( 'rest_authentication_errors', array( __CLASS__, 'rest_skip_cookie_check_for_donate_posts' ), 98 );
 	}
 
 	/**
-	 * Logged-in users trigger core {@see rest_cookie_check_errors} on POST; a missing or stale X-WP-Nonce returns "Cookie check failed."
-	 * Public donation routes already verify {@see verify_donate_nonce()} (fundolar_donate in JSON body or valid wp_rest nonce).
+	 * Logged-in donors send a valid X-WP-Nonce (wp_rest) on donation POST routes; without it, core cookie auth fails before the route runs.
+	 * Only bypass cookie auth when that header is present and valid — never from the route path alone.
 	 *
 	 * @param WP_Error|bool|null $result Prior result.
 	 * @return WP_Error|bool|null|true
@@ -142,7 +177,23 @@ class Fundolar_REST {
 		if ( ! isset( $_SERVER['REQUEST_METHOD'] ) || 'POST' !== strtoupper( (string) $_SERVER['REQUEST_METHOD'] ) ) {
 			return $result;
 		}
-		$slug = '(init-payment|paypal/capture|stripe/sync-intent)';
+		if ( ! self::is_fundolar_donate_post_route() ) {
+			return $result;
+		}
+		$x = isset( $_SERVER['HTTP_X_WP_NONCE'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_X_WP_NONCE'] ) ) : '';
+		if ( $x && wp_verify_nonce( $x, 'wp_rest' ) ) {
+			return true;
+		}
+		return $result;
+	}
+
+	/**
+	 * Whether the current request targets a public donation POST route.
+	 *
+	 * @return bool
+	 */
+	private static function is_fundolar_donate_post_route() {
+		$slug = '(init-payment|paypal/capture|stripe/sync-intent|marzpay/status)';
 		if ( ! empty( $_GET['rest_route'] ) ) {
 			$route = (string) wp_unslash( $_GET['rest_route'] );
 			if ( preg_match( '#^/?fundolar/v1/' . $slug . '$#i', $route ) ) {
@@ -151,10 +202,17 @@ class Fundolar_REST {
 		}
 		$uri  = isset( $_SERVER['REQUEST_URI'] ) ? wp_unslash( $_SERVER['REQUEST_URI'] ) : '';
 		$path = (string) wp_parse_url( $uri, PHP_URL_PATH );
-		if ( $path && preg_match( '#/fundolar/v1/' . $slug . '$#i', $path ) ) {
-			return true;
-		}
-		return $result;
+		return (bool) ( $path && preg_match( '#/fundolar/v1/' . $slug . '$#i', $path ) );
+	}
+
+	/**
+	 * Public donation POST endpoints: require a valid fundolar_donate or wp_rest nonce (see verify_donate_nonce).
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return bool
+	 */
+	public static function permission_donate_request( WP_REST_Request $request ) {
+		return self::verify_donate_nonce( $request );
 	}
 
 	/**
@@ -176,10 +234,13 @@ class Fundolar_REST {
 	 * @return WP_REST_Response
 	 */
 	public static function bootstrap() {
+		Fundolar_Platform::maybe_sync_gateways();
 		$data = array(
 			'nonce'           => wp_create_nonce( 'fundolar_donate' ),
 			'rest_nonce'      => wp_create_nonce( 'wp_rest' ),
 			'platformFeeRate' => Fundolar_Fees::effective_percentage_for_js(),
+			'enabled'         => Fundolar_Payments::gateways_ready_for_front(),
+			'gatewayMeta'     => Fundolar_Payments::synced_gateway_meta(),
 		);
 		$response = new WP_REST_Response( $data );
 		$response->header( 'Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0' );
@@ -221,10 +282,7 @@ class Fundolar_REST {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public static function init_payment( WP_REST_Request $request ) {
-		if ( ! self::verify_donate_nonce( $request ) ) {
-			return new WP_Error( 'fundolar_nonce', __( 'Invalid security token. Refresh the page and try again.', 'fundolar' ), array( 'status' => 403 ) );
-		}
-
+		Fundolar_Platform::maybe_sync_gateways( true );
 		$gateway = sanitize_key( (string) $request->get_param( 'gateway' ) );
 		$name    = sanitize_text_field( (string) $request->get_param( 'name' ) );
 		$email   = sanitize_email( (string) $request->get_param( 'email' ) );
@@ -242,6 +300,14 @@ class Fundolar_REST {
 		}
 		if ( ! Fundolar_Payments::gateway_ready( $gateway ) ) {
 			return new WP_Error( 'fundolar_gateway', __( 'This payment method is not available.', 'fundolar' ), array( 'status' => 400 ) );
+		}
+		$allowed_currencies = Fundolar_Payments::gateway_currencies( $gateway );
+		if ( ! empty( $allowed_currencies ) && ! in_array( $cur, $allowed_currencies, true ) ) {
+			return new WP_Error(
+				'fundolar_gateway_currency',
+				__( 'This payment method is not available for the selected currency.', 'fundolar' ),
+				array( 'status' => 400 )
+			);
 		}
 
 		$return = $request->get_param( 'return_url' );
@@ -262,20 +328,13 @@ class Fundolar_REST {
 			if ( is_wp_error( $res ) ) {
 				return $res;
 			}
-			$tid = Fundolar_DB::insert(
-				array(
-					'donor_name'             => $name,
-					'donor_email'            => $email,
-					'currency'               => $split['currency'],
-					'amount_gross'           => $split['gross'],
-					'amount_platform_fee'    => $split['fee'],
-					'amount_net'             => $split['net'],
-					'status'                 => 'pending',
-					'gateway'                => 'stripe',
-					'gateway_ref'            => $res['id'],
-					'receipt_amount_display' => $split['gross'],
-					'meta'                   => array( 'type' => 'stripe_intent' ),
-				)
+			$tid = Fundolar_DB::insert_checkout_transaction(
+				$name,
+				$email,
+				$split,
+				'stripe',
+				$res['id'],
+				array( 'type' => 'stripe_intent' )
 			);
 			if ( ! $tid ) {
 				return new WP_Error( 'fundolar_db', __( 'Could not start payment. Please try again.', 'fundolar' ), array( 'status' => 500 ) );
@@ -321,21 +380,7 @@ class Fundolar_REST {
 			if ( empty( $res['authorization_url'] ) ) {
 				return new WP_Error( 'fundolar_paystack', __( 'Paystack did not return a checkout URL.', 'fundolar' ), array( 'status' => 502 ) );
 			}
-			$tid = Fundolar_DB::insert(
-				array(
-					'donor_name'             => $name,
-					'donor_email'            => $email,
-					'currency'               => $split['currency'],
-					'amount_gross'           => $split['gross'],
-					'amount_platform_fee'    => $split['fee'],
-					'amount_net'             => $split['net'],
-					'status'                 => 'pending',
-					'gateway'                => 'paystack',
-					'gateway_ref'            => $res['reference'],
-					'receipt_amount_display' => $split['gross'],
-					'meta'                   => array(),
-				)
-			);
+			$tid = Fundolar_DB::insert_checkout_transaction( $name, $email, $split, 'paystack', $res['reference'] );
 			if ( ! $tid ) {
 				return new WP_Error( 'fundolar_db', __( 'Could not start payment. Please try again.', 'fundolar' ), array( 'status' => 500 ) );
 			}
@@ -371,21 +416,7 @@ class Fundolar_REST {
 			if ( empty( $res['link'] ) ) {
 				return new WP_Error( 'fundolar_fw', __( 'Flutterwave did not return a checkout URL.', 'fundolar' ), array( 'status' => 502 ) );
 			}
-			$tid = Fundolar_DB::insert(
-				array(
-					'donor_name'             => $name,
-					'donor_email'            => $email,
-					'currency'               => $split['currency'],
-					'amount_gross'           => $split['gross'],
-					'amount_platform_fee'    => $split['fee'],
-					'amount_net'             => $split['net'],
-					'status'                 => 'pending',
-					'gateway'                => 'flutterwave',
-					'gateway_ref'            => $res['tx_ref'],
-					'receipt_amount_display' => $split['gross'],
-					'meta'                   => array(),
-				)
-			);
+			$tid = Fundolar_DB::insert_checkout_transaction( $name, $email, $split, 'flutterwave', $res['tx_ref'] );
 			if ( ! $tid ) {
 				return new WP_Error( 'fundolar_db', __( 'Could not start payment. Please try again.', 'fundolar' ), array( 'status' => 500 ) );
 			}
@@ -420,21 +451,7 @@ class Fundolar_REST {
 			if ( empty( $res['id'] ) ) {
 				return new WP_Error( 'fundolar_paypal', __( 'PayPal did not return an order. Please try again.', 'fundolar' ), array( 'status' => 502 ) );
 			}
-			$tid = Fundolar_DB::insert(
-				array(
-					'donor_name'             => $name,
-					'donor_email'            => $email,
-					'currency'               => $split['currency'],
-					'amount_gross'           => $split['gross'],
-					'amount_platform_fee'    => $split['fee'],
-					'amount_net'             => $split['net'],
-					'status'                 => 'pending',
-					'gateway'                => 'paypal',
-					'gateway_ref'            => $res['id'],
-					'receipt_amount_display' => $split['gross'],
-					'meta'                   => array(),
-				)
-			);
+			$tid = Fundolar_DB::insert_checkout_transaction( $name, $email, $split, 'paypal', $res['id'] );
 			if ( ! $tid ) {
 				return new WP_Error( 'fundolar_db', __( 'Could not start payment. Please try again.', 'fundolar' ), array( 'status' => 500 ) );
 			}
@@ -462,6 +479,65 @@ class Fundolar_REST {
 			);
 		}
 
+		if ( 'mobile_money_ug' === $gateway ) {
+			if ( 'UGX' !== $split['currency'] ) {
+				return new WP_Error(
+					'fundolar_marzpay_currency',
+					__( 'Mobile Money (UG) checkout is available only for UGX.', 'fundolar' ),
+					array( 'status' => 400 )
+				);
+			}
+			$phone = sanitize_text_field( (string) $request->get_param( 'phone_number' ) );
+			$phone = Fundolar_Marzpay::normalize_phone( $phone );
+			if ( is_wp_error( $phone ) ) {
+				return $phone;
+			}
+			$mm_payload                 = $payload;
+			$mm_payload['phone_number'] = $phone;
+			$mm_payload['callback_url'] = rest_url( 'fundolar/v1/webhooks/marzpay' );
+			$res                        = Fundolar_Payments::marzpay_collect( $mm_payload );
+			if ( is_wp_error( $res ) ) {
+				return $res;
+			}
+			$tid = Fundolar_DB::insert_checkout_transaction(
+				$name,
+				$email,
+				$split,
+				'mobile_money_ug',
+				$res['uuid'],
+				array(
+					'marzpay_reference' => $res['reference'],
+					'phone_number'      => $phone,
+				)
+			);
+			if ( ! $tid ) {
+				return new WP_Error( 'fundolar_db', __( 'Could not start payment. Please try again.', 'fundolar' ), array( 'status' => 500 ) );
+			}
+			Fundolar_Platform::report_donation_created(
+				(int) $tid,
+				array(
+					'donor_name'        => $name,
+					'donor_email'       => $email,
+					'payment_gateway'   => 'mobile_money_ug',
+					'gateway_reference' => $res['uuid'],
+					'currency'          => $split['currency'],
+					'gross_amount'      => $split['gross'],
+					'source_channel'    => 'wordpress_plugin',
+				)
+			);
+			return rest_ensure_response(
+				array(
+					'ok'             => true,
+					'gateway'        => 'mobile_money_ug',
+					'transaction_id' => $tid,
+					'marzpay_uuid'   => $res['uuid'],
+					'status'         => $res['status'],
+					'message'        => __( 'Check your phone and approve the Mobile Money prompt.', 'fundolar' ),
+					'receipt'        => $split['gross'],
+				)
+			);
+		}
+
 		if ( 'pesapal' === $gateway ) {
 			if ( ! in_array( $split['currency'], Fundolar_Payments::pesapal_supported_currencies(), true ) ) {
 				return new WP_Error(
@@ -478,21 +554,14 @@ class Fundolar_REST {
 			if ( empty( $res['authorization_url'] ) ) {
 				return new WP_Error( 'fundolar_pesapal', __( 'Pesapal did not return a checkout URL.', 'fundolar' ), array( 'status' => 502 ) );
 			}
-			$tid = Fundolar_DB::insert(
+			$tid = Fundolar_DB::insert_checkout_transaction(
+				$name,
+				$email,
+				$split,
+				'pesapal',
+				$res['reference'],
 				array(
-					'donor_name'             => $name,
-					'donor_email'            => $email,
-					'currency'               => $split['currency'],
-					'amount_gross'           => $split['gross'],
-					'amount_platform_fee'    => $split['fee'],
-					'amount_net'             => $split['net'],
-					'status'                 => 'pending',
-					'gateway'                => 'pesapal',
-					'gateway_ref'            => $res['reference'],
-					'receipt_amount_display' => $split['gross'],
-					'meta'                   => array(
-						'order_tracking_id' => isset( $res['order_tracking_id'] ) ? (string) $res['order_tracking_id'] : '',
-					),
+					'order_tracking_id' => isset( $res['order_tracking_id'] ) ? (string) $res['order_tracking_id'] : '',
 				)
 			);
 			if ( ! $tid ) {
@@ -535,9 +604,6 @@ class Fundolar_REST {
 		if ( '' === $order_id ) {
 			return new WP_Error( 'fundolar_paypal', __( 'Missing order id.', 'fundolar' ), array( 'status' => 400 ) );
 		}
-		if ( ! self::paypal_capture_request_authorized( $request, $order_id ) ) {
-			return new WP_Error( 'fundolar_nonce', __( 'Invalid security token.', 'fundolar' ), array( 'status' => 403 ) );
-		}
 		$s      = Fundolar_Payments::get_settings();
 		$secret = Fundolar_Payments::get_credential_secret( 'paypal_secret' );
 		$client   = trim( $s['paypal_client_id'] );
@@ -576,29 +642,6 @@ class Fundolar_REST {
 		}
 		self::mark_paypal_tx( $order_id, 'failed', $json );
 		return new WP_Error( 'fundolar_paypal', __( 'Payment not completed.', 'fundolar' ), array( 'status' => 400 ) );
-	}
-
-	/**
-	 * Authorize PayPal capture requests even when nonce is stale, as long as the order exists in local pending rows.
-	 *
-	 * @param WP_REST_Request $request Request.
-	 * @param string          $order_id PayPal order id.
-	 * @return bool
-	 */
-	private static function paypal_capture_request_authorized( WP_REST_Request $request, $order_id ) {
-		if ( self::verify_donate_nonce( $request ) ) {
-			return true;
-		}
-		global $wpdb;
-		$table = Fundolar_DB::table();
-		$row   = $wpdb->get_row(
-			$wpdb->prepare(
-				"SELECT id FROM {$table} WHERE gateway = %s AND gateway_ref = %s LIMIT 1",
-				'paypal',
-				$order_id
-			)
-		);
-		return (bool) $row;
 	}
 
 	/**
@@ -873,9 +916,6 @@ class Fundolar_REST {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public static function stripe_sync_intent( WP_REST_Request $request ) {
-		if ( ! self::verify_donate_nonce( $request ) ) {
-			return new WP_Error( 'fundolar_nonce', __( 'Invalid security token.', 'fundolar' ), array( 'status' => 403 ) );
-		}
 		$id = sanitize_text_field( (string) $request->get_param( 'payment_intent' ) );
 		if ( '' === $id || 0 !== strpos( $id, 'pi_' ) ) {
 			return new WP_Error( 'fundolar_stripe', __( 'Invalid payment reference.', 'fundolar' ), array( 'status' => 400 ) );
@@ -927,5 +967,43 @@ class Fundolar_REST {
 			}
 		}
 		return rest_ensure_response( array( 'ok' => true, 'status' => $status ) );
+	}
+
+	/**
+	 * MarzPay webhook / callback.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return WP_REST_Response
+	 */
+	public static function webhook_marzpay( WP_REST_Request $request ) {
+		$json = json_decode( $request->get_body(), true );
+		if ( is_array( $json ) ) {
+			Fundolar_Payments::marzpay_handle_webhook( $json );
+		}
+		return new WP_REST_Response( array( 'received' => true ), 200 );
+	}
+
+	/**
+	 * Poll MarzPay collection status for donor UI.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public static function marzpay_status( WP_REST_Request $request ) {
+		$tid = (int) $request->get_param( 'transaction_id' );
+		if ( $tid < 1 ) {
+			return new WP_Error( 'fundolar_marzpay', __( 'Invalid transaction.', 'fundolar' ), array( 'status' => 400 ) );
+		}
+		$res = Fundolar_Payments::marzpay_sync_transaction( $tid );
+		if ( is_wp_error( $res ) ) {
+			return $res;
+		}
+		return rest_ensure_response(
+			array(
+				'ok'        => true,
+				'status'    => $res['status'],
+				'completed' => ! empty( $res['completed'] ),
+			)
+		);
 	}
 }

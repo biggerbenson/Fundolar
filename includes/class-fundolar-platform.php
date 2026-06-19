@@ -11,6 +11,16 @@ defined( 'ABSPATH' ) || exit;
  * Class Fundolar_Platform
  */
 class Fundolar_Platform {
+
+	/**
+	 * Re-sync gateways when local cache is older than this (seconds).
+	 */
+	const SYNC_STALE_SECONDS = 21600;
+
+	/**
+	 * Transient lock to avoid concurrent sync requests.
+	 */
+	const SYNC_LOCK_TRANSIENT = 'fundolar_platform_sync_lock';
 	/**
 	 * Production Fundolar app base URL (default when no override is saved).
 	 *
@@ -191,7 +201,12 @@ class Fundolar_Platform {
 		}
 
 		Fundolar_Payments::save_remote_credentials( $body );
-		return self::sync_gateway_settings();
+		$sync = self::sync_gateway_settings();
+		if ( is_wp_error( $sync ) ) {
+			return $sync;
+		}
+		self::sync_historical_donations();
+		return true;
 	}
 
 	/**
@@ -206,7 +221,185 @@ class Fundolar_Platform {
 			return $res;
 		}
 		Fundolar_Payments::save_remote_credentials( $res );
+		self::sync_pending_deletions();
 		return true;
+	}
+
+	/**
+	 * Apply Central donation deletions to the local WordPress transaction log.
+	 *
+	 * @return array{deleted:int,acknowledged:int}
+	 */
+	public static function sync_pending_deletions() {
+		if ( ! Fundolar_Payments::is_central_connected() ) {
+			return array(
+				'deleted'      => 0,
+				'acknowledged' => 0,
+			);
+		}
+
+		$res = self::signed_request( 'GET', '/api/plugin/donation-deletions' );
+		if ( is_wp_error( $res ) || ! is_array( $res ) ) {
+			return array(
+				'deleted'      => 0,
+				'acknowledged' => 0,
+			);
+		}
+
+		$events = isset( $res['data'] ) && is_array( $res['data'] ) ? $res['data'] : array();
+		if ( empty( $events ) ) {
+			return array(
+				'deleted'      => 0,
+				'acknowledged' => 0,
+			);
+		}
+
+		$deleted = 0;
+		$acked   = array();
+		foreach ( $events as $event ) {
+			if ( ! is_array( $event ) ) {
+				continue;
+			}
+			$event_id   = (int) ( $event['id'] ?? 0 );
+			$local_id   = (int) ( $event['local_plugin_record_id'] ?? 0 );
+			$central_id = (int) ( $event['central_donation_id'] ?? 0 );
+			$removed    = false;
+
+			if ( $local_id > 0 ) {
+				$row = Fundolar_DB::get( $local_id );
+				if ( ! $row ) {
+					$removed = true;
+				} else {
+					$removed = Fundolar_DB::delete( $local_id );
+				}
+			} elseif ( $central_id > 0 ) {
+				$count = Fundolar_DB::delete_by_platform_donation_id( $central_id );
+				$removed = $count > 0;
+				if ( ! $removed ) {
+					$removed = true;
+				}
+			}
+
+			if ( $removed ) {
+				if ( $local_id > 0 || $central_id > 0 ) {
+					++$deleted;
+				}
+				if ( $event_id > 0 ) {
+					$acked[] = $event_id;
+				}
+			}
+		}
+
+		$acknowledged = 0;
+		if ( ! empty( $acked ) ) {
+			$ack = self::signed_request(
+				'POST',
+				'/api/plugin/donation-deletions/ack',
+				array( 'event_ids' => array_values( array_unique( $acked ) ) )
+			);
+			if ( ! is_wp_error( $ack ) && is_array( $ack ) ) {
+				$acknowledged = (int) ( $ack['acknowledged'] ?? count( $acked ) );
+			}
+		}
+
+		return array(
+			'deleted'      => $deleted,
+			'acknowledged' => $acknowledged,
+		);
+	}
+
+	/**
+	 * Sync gateways when connected and cache is stale (or forced).
+	 *
+	 * @param bool $force Skip staleness check.
+	 * @return true|WP_Error|null True on sync, null when skipped, WP_Error on failure.
+	 */
+	public static function maybe_sync_gateways( $force = false ) {
+		if ( ! Fundolar_Payments::is_central_connected() ) {
+			return null;
+		}
+		if ( get_transient( self::SYNC_LOCK_TRANSIENT ) ) {
+			return null;
+		}
+		if ( ! $force && ! Fundolar_Payments::platform_sync_is_stale() ) {
+			return null;
+		}
+		set_transient( self::SYNC_LOCK_TRANSIENT, 1, 60 );
+		$result = self::sync_gateway_settings();
+		if ( true === $result ) {
+			self::sync_pending_deletions();
+		}
+		delete_transient( self::SYNC_LOCK_TRANSIENT );
+		return $result;
+	}
+
+	/**
+	 * Scheduled heartbeat: refresh gateway settings from Central.
+	 *
+	 * @return void
+	 */
+	public static function run_heartbeat() {
+		if ( ! Fundolar_Payments::is_central_connected() ) {
+			return;
+		}
+		self::maybe_sync_gateways( true );
+		self::sync_pending_deletions();
+		self::reconcile_central_usd_ledger();
+	}
+
+	/**
+	 * Push payment-currency amounts to Central for donations already linked to platform ids.
+	 *
+	 * @param int $limit Max rows per run.
+	 * @return array{reconciled:int}
+	 */
+	public static function reconcile_central_usd_ledger( $limit = 100 ) {
+		if ( ! Fundolar_Payments::is_central_connected() ) {
+			return array( 'reconciled' => 0 );
+		}
+		if ( get_transient( 'fundolar_usd_reconcile_lock' ) ) {
+			return array( 'reconciled' => 0 );
+		}
+		set_transient( 'fundolar_usd_reconcile_lock', 1, 300 );
+
+		global $wpdb;
+		$table = Fundolar_DB::table();
+		$limit = max( 1, min( 200, (int) $limit ) );
+		$rows  = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT * FROM {$table} WHERE meta LIKE %s ORDER BY id ASC LIMIT %d",
+				'%platform_donation_id%',
+				$limit
+			)
+		);
+
+		$reconciled = 0;
+		foreach ( (array) $rows as $row ) {
+			$meta = array();
+			if ( ! empty( $row->meta ) ) {
+				$decoded = json_decode( (string) $row->meta, true );
+				if ( is_array( $decoded ) ) {
+					$meta = $decoded;
+				}
+			}
+			$donation_id = (int) ( $meta['platform_donation_id'] ?? 0 );
+			if ( $donation_id <= 0 ) {
+				continue;
+			}
+			$body = Fundolar_Ledger::central_payment_payload( $row );
+			$body['donation_id'] = $donation_id;
+			if ( ! empty( $meta['platform_donation_uuid'] ) ) {
+				$body['uuid'] = (string) $meta['platform_donation_uuid'];
+			}
+			$res = self::signed_request( 'POST', '/api/plugin/donations/reconcile-usd', $body );
+			if ( ! is_wp_error( $res ) ) {
+				++$reconciled;
+			}
+		}
+
+		delete_transient( 'fundolar_usd_reconcile_lock' );
+
+		return array( 'reconciled' => $reconciled );
 	}
 
 	/**
@@ -216,6 +409,91 @@ class Fundolar_Platform {
 	 */
 	public static function fetch_dashboard_stats() {
 		return self::signed_request( 'GET', '/api/plugin/dashboard-stats' );
+	}
+
+	/**
+	 * Push local donation history to Central with exact stored amounts.
+	 *
+	 * @param int $batch_size Rows per request cycle.
+	 * @return array{synced:int,failed:int,remaining:int}|WP_Error
+	 */
+	public static function sync_historical_donations( $batch_size = 50 ) {
+		$s   = Fundolar_Payments::get_settings();
+		$api = trim( (string) $s['platform_api_key'] );
+		if ( '' === $api ) {
+			return new WP_Error( 'fundolar_platform_not_connected', __( 'This site is not connected yet. Use your site key to connect.', 'fundolar' ) );
+		}
+
+		$batch_size = max( 1, min( 100, (int) $batch_size ) );
+		$rows       = Fundolar_DB::unsynced_transactions( $batch_size );
+		$synced     = 0;
+		$failed     = 0;
+
+		foreach ( $rows as $row ) {
+			$local_id = (int) $row->id;
+			$meta     = array();
+			if ( ! empty( $row->meta ) ) {
+				$decoded = json_decode( (string) $row->meta, true );
+				if ( is_array( $decoded ) ) {
+					$meta = $decoded;
+				}
+			}
+			if ( ! empty( $meta['platform_donation_id'] ) ) {
+				continue;
+			}
+
+			$payload = array_merge(
+				array(
+					'donor_name'             => (string) $row->donor_name,
+					'donor_email'              => (string) $row->donor_email,
+					'payment_gateway'          => (string) $row->gateway,
+					'gateway_reference'        => (string) $row->gateway_ref,
+					'processor_fee_amount'     => 0,
+					'source_channel'           => 'wordpress_plugin',
+					'local_plugin_record_id'   => $local_id,
+					'idempotency_key'          => 'fundolar_local_' . $local_id,
+					'gateway_status'           => (string) $row->status,
+				),
+				Fundolar_Ledger::central_payment_payload( $row )
+			);
+
+			$res = self::signed_request( 'POST', '/api/plugin/donations/create', $payload );
+			if ( is_wp_error( $res ) || ! is_array( $res ) ) {
+				++$failed;
+				continue;
+			}
+
+			if ( isset( $res['id'] ) ) {
+				$meta['platform_donation_id'] = (int) $res['id'];
+			}
+			if ( isset( $res['uuid'] ) ) {
+				$meta['platform_donation_uuid'] = (string) $res['uuid'];
+			}
+			Fundolar_DB::update( $local_id, array( 'meta' => $meta ) );
+
+			$status = sanitize_key( (string) $row->status );
+			if ( in_array( $status, array( 'completed', 'failed', 'refunded', 'pending' ), true ) && 'pending' !== $status ) {
+				self::report_donation_status( $local_id, $status, $status . '_import', array( 'imported' => true ) );
+			}
+
+			++$synced;
+		}
+
+		$remaining = Fundolar_DB::count_unsynced_transactions();
+		if ( $remaining < 1 ) {
+			Fundolar_Migration::mark_central_sync_done();
+		}
+
+		$result = array(
+			'synced'    => $synced,
+			'failed'    => $failed,
+			'remaining' => $remaining,
+		);
+		if ( $synced > 0 ) {
+			set_transient( 'fundolar_last_historical_sync', $result, 60 );
+		}
+
+		return $result;
 	}
 
 	/**

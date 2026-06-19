@@ -18,12 +18,42 @@ class Fundolar_Fees {
 	 * @return float
 	 */
 	public static function rate() {
+		$rules = self::synced_rules();
+		if ( null !== $rules && isset( $rules['percentage'] ) ) {
+			return (float) $rules['percentage'];
+		}
 		/**
 		 * Filter platform fee rate (decimal). Default 3.5%.
 		 *
 		 * @param float $rate Rate.
 		 */
 		return (float) apply_filters( 'fundolar_platform_fee_rate', defined( 'FUNDOLAR_PLATFORM_FEE_RATE' ) ? FUNDOLAR_PLATFORM_FEE_RATE : 0.035 );
+	}
+
+	/**
+	 * Fee rules synced from Central when connected.
+	 *
+	 * @return array{percentage:float,fixed:float,min:float,max:float,revision:int}|null
+	 */
+	private static function synced_rules() {
+		if ( ! Fundolar_Payments::is_central_connected() ) {
+			return null;
+		}
+		$s = Fundolar_Payments::get_settings();
+		if ( empty( $s['platform_fee_rules'] ) || ! is_array( $s['platform_fee_rules'] ) ) {
+			return null;
+		}
+		$rules = $s['platform_fee_rules'];
+		if ( ! isset( $rules['percentage'] ) ) {
+			return null;
+		}
+		return array(
+			'percentage' => (float) $rules['percentage'],
+			'fixed'      => isset( $rules['fixed'] ) ? (float) $rules['fixed'] : 0,
+			'min'        => isset( $rules['min'] ) ? (float) $rules['min'] : 0,
+			'max'        => isset( $rules['max'] ) ? (float) $rules['max'] : 0,
+			'revision'   => isset( $rules['revision'] ) ? (int) $rules['revision'] : 0,
+		);
 	}
 
 	/**
@@ -100,6 +130,16 @@ class Fundolar_Fees {
 	 * @return array{gross:float,fee:float,net:float,currency:string}
 	 */
 	public static function split_for_checkout( $gross, $currency = 'USD' ) {
+		$rules = self::synced_rules();
+		if ( null !== $rules ) {
+			$calc = self::calculate_from_rules( $gross, $currency, $rules, 0 );
+			return array(
+				'gross'    => $calc['gross'],
+				'fee'      => $calc['platform_fee'],
+				'net'      => $calc['net_to_site'],
+				'currency' => $calc['currency'],
+			);
+		}
 		return self::split( $gross, $currency );
 	}
 

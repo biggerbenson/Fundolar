@@ -59,6 +59,8 @@ class Fundolar_Plugin {
 	 */
 	public static function activate() {
 		Fundolar_Migration::boot();
+		Fundolar_Migration::deactivate_shadow_bootstraps();
+		Fundolar_Migration::remove_shadow_bootstrap_files();
 		Fundolar_DB::create_tables();
 		if ( ! get_option( Fundolar_Payments::OPTION ) ) {
 			update_option(

@@ -371,4 +371,179 @@ class Fundolar_Migration {
 	public static function mark_central_sync_done() {
 		delete_option( 'fundolar_pending_central_sync' );
 	}
+
+	/**
+	 * Register hooks that keep a single Fundolar entry in the Plugins screen.
+	 */
+	public static function register_bootstrap_hooks() {
+		add_filter( 'all_plugins', array( __CLASS__, 'filter_all_plugins' ), 20 );
+		add_action( 'activated_plugin', array( __CLASS__, 'on_plugin_activated' ), 10, 2 );
+		add_action( 'admin_init', array( __CLASS__, 'maybe_cleanup_shadow_bootstraps' ), 1 );
+		add_action( 'upgrader_process_complete', array( __CLASS__, 'on_upgrader_complete' ), 10, 2 );
+	}
+
+	/**
+	 * Plugin folder slug (fundolar or legacy fundora).
+	 *
+	 * @return string
+	 */
+	public static function plugin_folder_slug() {
+		return defined( 'FUNDOLAR_PLUGIN_DIR' ) ? basename( FUNDOLAR_PLUGIN_DIR ) : 'fundolar';
+	}
+
+	/**
+	 * Canonical bootstrap file for this install.
+	 *
+	 * @return string Plugin basename, e.g. fundolar/fundolar.php.
+	 */
+	public static function canonical_bootstrap_basename() {
+		$folder = self::plugin_folder_slug();
+		$file   = ( 'fundora' === $folder ) ? 'fundora.php' : 'fundolar.php';
+
+		return $folder . '/' . $file;
+	}
+
+	/**
+	 * Secondary bootstrap files that must not appear as separate plugins.
+	 *
+	 * @return string[]
+	 */
+	public static function shadow_bootstrap_basenames() {
+		$folder    = self::plugin_folder_slug();
+		$canonical = self::canonical_bootstrap_basename();
+		$candidates = array(
+			$folder . '/fundolar.php',
+			$folder . '/fundora.php',
+		);
+
+		return array_values(
+			array_filter(
+				$candidates,
+				static function ( $basename ) use ( $canonical ) {
+					return $basename !== $canonical;
+				}
+			)
+		);
+	}
+
+	/**
+	 * Hide duplicate bootstrap entries from the Plugins list.
+	 *
+	 * @param array<string,array<string,mixed>> $plugins All plugins.
+	 * @return array<string,array<string,mixed>>
+	 */
+	public static function filter_all_plugins( $plugins ) {
+		if ( ! is_array( $plugins ) ) {
+			return $plugins;
+		}
+		foreach ( self::shadow_bootstrap_basenames() as $shadow ) {
+			unset( $plugins[ $shadow ] );
+		}
+
+		return $plugins;
+	}
+
+	/**
+	 * After activation, ensure only the canonical bootstrap remains.
+	 *
+	 * @param string $plugin Plugin basename.
+	 * @param bool   $network_wide Network activation.
+	 */
+	public static function on_plugin_activated( $plugin, $network_wide ) {
+		unset( $network_wide );
+		$canonical = self::canonical_bootstrap_basename();
+		$shadows   = self::shadow_bootstrap_basenames();
+		if ( ! in_array( $plugin, array_merge( array( $canonical ), $shadows ), true ) ) {
+			return;
+		}
+		self::deactivate_shadow_bootstraps();
+		self::remove_shadow_bootstrap_files();
+	}
+
+	/**
+	 * Cleanup duplicates after plugin updates.
+	 *
+	 * @param WP_Upgrader $upgrader Upgrader instance.
+	 * @param array       $options  Options.
+	 */
+	public static function on_upgrader_complete( $upgrader, $options ) {
+		unset( $upgrader );
+		if ( empty( $options['action'] ) || 'update' !== $options['action'] || empty( $options['type'] ) || 'plugin' !== $options['type'] ) {
+			return;
+		}
+		$canonical = self::canonical_bootstrap_basename();
+		$plugins   = isset( $options['plugins'] ) && is_array( $options['plugins'] ) ? $options['plugins'] : array();
+		if ( ! in_array( $canonical, $plugins, true ) ) {
+			$hit = false;
+			foreach ( self::shadow_bootstrap_basenames() as $shadow ) {
+				if ( in_array( $shadow, $plugins, true ) ) {
+					$hit = true;
+					break;
+				}
+			}
+			if ( ! $hit ) {
+				return;
+			}
+		}
+		self::deactivate_shadow_bootstraps();
+		self::remove_shadow_bootstrap_files();
+	}
+
+	/**
+	 * Remove shadow bootstrap files on admin load (idempotent).
+	 */
+	public static function maybe_cleanup_shadow_bootstraps() {
+		self::deactivate_shadow_bootstraps();
+		self::remove_shadow_bootstrap_files();
+	}
+
+	/**
+	 * Deactivate non-canonical bootstrap plugins in the same folder.
+	 */
+	public static function deactivate_shadow_bootstraps() {
+		$shadows = self::shadow_bootstrap_basenames();
+		if ( empty( $shadows ) ) {
+			return;
+		}
+		if ( ! function_exists( 'deactivate_plugins' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		}
+		deactivate_plugins( $shadows, true );
+
+		if ( is_multisite() ) {
+			$network = (array) get_site_option( 'active_sitewide_plugins', array() );
+			$changed = false;
+			foreach ( $shadows as $shadow ) {
+				if ( isset( $network[ $shadow ] ) ) {
+					unset( $network[ $shadow ] );
+					$changed = true;
+				}
+			}
+			if ( $changed ) {
+				update_site_option( 'active_sitewide_plugins', $network );
+			}
+		}
+	}
+
+	/**
+	 * Delete secondary bootstrap PHP files so WordPress cannot list them twice.
+	 */
+	public static function remove_shadow_bootstrap_files() {
+		if ( ! defined( 'FUNDOLAR_PLUGIN_DIR' ) ) {
+			return;
+		}
+		$dir = trailingslashit( FUNDOLAR_PLUGIN_DIR );
+		foreach ( self::shadow_bootstrap_basenames() as $shadow ) {
+			$file = $dir . basename( $shadow );
+			if ( ! is_file( $file ) ) {
+				continue;
+			}
+			if ( function_exists( 'wp_delete_file' ) ) {
+				wp_delete_file( $file );
+			} else {
+				// phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink
+				@unlink( $file );
+			}
+		}
+	}
 }

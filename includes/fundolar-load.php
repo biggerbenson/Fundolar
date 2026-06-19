@@ -8,7 +8,7 @@
 defined( 'ABSPATH' ) || exit;
 
 if ( ! defined( 'FUNDOLAR_VERSION' ) ) {
-	define( 'FUNDOLAR_VERSION', '1.3.9' );
+	define( 'FUNDOLAR_VERSION', '1.3.10' );
 }
 if ( ! defined( 'FUNDOLAR_PLUGIN_FILE' ) ) {
 	define( 'FUNDOLAR_PLUGIN_FILE', dirname( __DIR__ ) . '/fundolar.php' );
@@ -48,6 +48,8 @@ require_once FUNDOLAR_PLUGIN_DIR . 'includes/class-fundolar-plugin-information.p
 require_once FUNDOLAR_PLUGIN_DIR . 'includes/class-fundolar-github-updater.php';
 require_once FUNDOLAR_PLUGIN_DIR . 'includes/class-fundolar-migration.php';
 require_once FUNDOLAR_PLUGIN_DIR . 'includes/class-fundolar-plugin.php';
+
+Fundolar_Migration::register_bootstrap_hooks();
 
 Fundolar_Gateway_Connect::init();
 Fundolar_Admin_Notices::init();

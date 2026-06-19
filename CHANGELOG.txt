@@ -1,6 +1,12 @@
 Fundolar Plugin Changelog
 ========================
 
+Version 1.3.9 - 2026-06-10
+--------------------------
+- Fix donation form not showing payment methods: force Central gateway sync when methods are missing or stale.
+- Re-activate with the saved site key when API credentials are incomplete.
+- Bootstrap API and form JS now hydrate payment method tiles after sync (helps cached pages).
+
 Version 1.3.8 - 2026-06-10
 --------------------------
 - WordPress can now update Fundolar directly from GitHub (`biggerbenson/fundolar`).

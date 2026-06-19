@@ -169,7 +169,7 @@ class Fundolar_Payments {
 	 *
 	 * @return bool
 	 */
-	public static function platform_sync_is_stale() {
+	public static function platform_sync_is_stale( $stale_after = null ) {
 		if ( ! self::is_central_connected() ) {
 			return false;
 		}
@@ -178,8 +178,12 @@ class Fundolar_Payments {
 		if ( false === $at || $at < 1 ) {
 			return true;
 		}
-		$stale_after = (int) apply_filters( 'fundolar_platform_sync_stale_seconds', Fundolar_Platform::SYNC_STALE_SECONDS );
-		return ( time() - $at ) >= max( 300, $stale_after );
+		if ( null === $stale_after ) {
+			$stale_after = (int) apply_filters( 'fundolar_platform_sync_stale_seconds', Fundolar_Platform::SYNC_STALE_SECONDS );
+		} else {
+			$stale_after = (int) $stale_after;
+		}
+		return ( time() - $at ) >= max( 60, $stale_after );
 	}
 
 	/**
@@ -214,8 +218,23 @@ class Fundolar_Payments {
 		if ( ! self::is_central_mode() ) {
 			return false;
 		}
-		$s = self::get_settings();
-		return '' !== trim( (string) ( $s['platform_api_key'] ?? '' ) );
+		return self::has_complete_platform_credentials();
+	}
+
+	/**
+	 * Whether the site has both Central API key and signing secret required for sync.
+	 *
+	 * @return bool
+	 */
+	public static function has_complete_platform_credentials() {
+		$s   = self::get_settings();
+		$api = trim( (string) ( $s['platform_api_key'] ?? '' ) );
+		if ( '' === $api ) {
+			return false;
+		}
+		$secret = self::decrypt_secret( isset( $s['platform_signing_secret'] ) ? $s['platform_signing_secret'] : '' );
+
+		return '' !== $secret;
 	}
 
 	/**
@@ -409,6 +428,30 @@ class Fundolar_Payments {
 	}
 
 	/**
+	 * Labels and logo URLs for gateways exposed to the donation form JS.
+	 *
+	 * @param string[]|null $gateways Optional gateway slugs; defaults to gateways ready for front.
+	 * @return array<string,array{label:string,logo:string}>
+	 */
+	public static function gateway_assets_for_js( $gateways = null ) {
+		if ( null === $gateways ) {
+			$gateways = self::gateways_ready_for_front();
+		}
+		$out = array();
+		foreach ( (array) $gateways as $gateway ) {
+			$gateway = sanitize_key( (string) $gateway );
+			if ( '' === $gateway ) {
+				continue;
+			}
+			$out[ $gateway ] = array(
+				'label' => self::gateway_label( $gateway ),
+				'logo'  => self::gateway_logo_url( $gateway ),
+			);
+		}
+		return $out;
+	}
+
+	/**
 	 * Save settings (encrypt secrets).
 	 *
 	 * @param array $input Raw input.
@@ -560,10 +603,18 @@ class Fundolar_Payments {
 			$out['platform_sync_revision'] = sanitize_text_field( (string) $payload['sync_revision'] );
 		}
 		if ( isset( $payload['gateways'] ) && is_array( $payload['gateways'] ) ) {
-			$meta = array();
+			$meta            = array();
+			$known_gateways  = self::builtin_gateway_slugs();
+			foreach ( array_keys( $payload['gateways'] ) as $gateway_key ) {
+				$gateway_key = sanitize_key( (string) $gateway_key );
+				if ( '' !== $gateway_key ) {
+					$known_gateways[] = $gateway_key;
+				}
+			}
+			$known_gateways = array_values( array_unique( $known_gateways ) );
 			foreach ( $payload['gateways'] as $gateway => $info ) {
 				$gateway = sanitize_key( (string) $gateway );
-				if ( ! in_array( $gateway, self::gateways(), true ) || ! is_array( $info ) ) {
+				if ( ! in_array( $gateway, $known_gateways, true ) || ! is_array( $info ) ) {
 					continue;
 				}
 				$currencies = array();

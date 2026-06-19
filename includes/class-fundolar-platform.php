@@ -18,6 +18,11 @@ class Fundolar_Platform {
 	const SYNC_STALE_SECONDS = 21600;
 
 	/**
+	 * Shorter staleness window when rendering the public donation form.
+	 */
+	const DISPLAY_SYNC_STALE_SECONDS = 300;
+
+	/**
 	 * Transient lock to avoid concurrent sync requests.
 	 */
 	const SYNC_LOCK_TRANSIENT = 'fundolar_platform_sync_lock';
@@ -331,6 +336,51 @@ class Fundolar_Platform {
 		}
 		delete_transient( self::SYNC_LOCK_TRANSIENT );
 		return $result;
+	}
+
+	/**
+	 * Ensure gateway settings are fresh before showing the donation form or bootstrap API.
+	 *
+	 * Forces a Central pull when no payment methods are ready, credentials are incomplete,
+	 * or the last sync is older than the display staleness window.
+	 *
+	 * @param bool $force Always pull from Central when true (e.g. before checkout).
+	 * @return void
+	 */
+	public static function ensure_gateways_synced_for_display( $force = false ) {
+		self::repair_platform_connection_if_needed();
+
+		if ( ! Fundolar_Payments::is_central_connected() ) {
+			return;
+		}
+
+		$s     = Fundolar_Payments::get_settings();
+		$ready = Fundolar_Payments::gateways_ready_for_front();
+		if ( ! $force ) {
+			$force = empty( $ready )
+				|| empty( $s['enabled_gateways'] )
+				|| ! empty( $s['platform_sync_error'] )
+				|| Fundolar_Payments::platform_sync_is_stale( self::DISPLAY_SYNC_STALE_SECONDS );
+		}
+
+		self::maybe_sync_gateways( $force );
+	}
+
+	/**
+	 * Re-activate with the saved site key when API credentials are missing or incomplete.
+	 *
+	 * @return void
+	 */
+	private static function repair_platform_connection_if_needed() {
+		$s = Fundolar_Payments::get_settings();
+		if ( Fundolar_Payments::has_complete_platform_credentials() ) {
+			return;
+		}
+		$site_key = trim( (string) ( $s['platform_site_key'] ?? '' ) );
+		if ( '' === $site_key ) {
+			return;
+		}
+		self::connect_site();
 	}
 
 	/**

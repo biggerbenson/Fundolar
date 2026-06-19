@@ -46,8 +46,20 @@
 				if (d && Array.isArray(d.enabled)) {
 					cfg.enabled = d.enabled;
 				}
+				if (d && Array.isArray(d.syncedGateways)) {
+					cfg.syncedGateways = d.syncedGateways;
+				}
 				if (d && d.gatewayMeta && typeof d.gatewayMeta === 'object') {
 					cfg.gatewayMeta = d.gatewayMeta;
+				}
+				if (d && d.gatewayAssets && typeof d.gatewayAssets === 'object') {
+					cfg.gatewayAssets = d.gatewayAssets;
+				}
+				if (d && typeof d.stripePk === 'string') {
+					cfg.stripePk = d.stripePk;
+				}
+				if (d && typeof d.paypalClient === 'string') {
+					cfg.paypalClient = d.paypalClient;
 				}
 				if (d && typeof d.platformFeeRate === 'number') {
 					cfg.platformFeeRate = d.platformFeeRate;
@@ -405,6 +417,116 @@
 			return true;
 		}
 
+		function gatewayLabel(gatewayId) {
+			if (cfg.gatewayAssets && cfg.gatewayAssets[gatewayId] && cfg.gatewayAssets[gatewayId].label) {
+				return String(cfg.gatewayAssets[gatewayId].label);
+			}
+			if (cfg.gatewayMeta && cfg.gatewayMeta[gatewayId] && cfg.gatewayMeta[gatewayId].label) {
+				return String(cfg.gatewayMeta[gatewayId].label);
+			}
+			return gatewayId;
+		}
+
+		function gatewayLogo(gatewayId) {
+			if (cfg.gatewayAssets && cfg.gatewayAssets[gatewayId] && cfg.gatewayAssets[gatewayId].logo) {
+				return String(cfg.gatewayAssets[gatewayId].logo);
+			}
+			return '';
+		}
+
+		function ensureGatewaySectionFromConfig() {
+			var enabled = Array.isArray(cfg.enabled) ? cfg.enabled.filter(Boolean) : [];
+			if (!enabled.length) {
+				return;
+			}
+			if (form.querySelector('input[name="gateway"]')) {
+				return;
+			}
+
+			var notice = form.querySelector('.fundolar-notice');
+			if (notice) {
+				notice.remove();
+			}
+
+			var section = form.querySelector('.fundolar-section--pay');
+			if (!section) {
+				section = document.createElement('section');
+				section.className = 'fundolar-section fundolar-section--pay';
+				section.setAttribute('aria-labelledby', 'fundolar-pay-heading');
+				section.innerHTML =
+					'<h3 class="fundolar-section__title" id="fundolar-pay-heading">Payment method</h3>' +
+					'<div class="fundolar-gateways" role="radiogroup" aria-label="Payment method"></div>';
+				var cardWrapEl = $('#fundolar-card-element', root);
+				if (cardWrapEl && cardWrapEl.parentNode) {
+					cardWrapEl.parentNode.insertBefore(section, cardWrapEl);
+				} else if (submitBtn && submitBtn.parentNode) {
+					submitBtn.parentNode.insertBefore(section, submitBtn);
+				} else {
+					form.appendChild(section);
+				}
+			}
+
+			var group = section.querySelector('.fundolar-gateways');
+			if (!group) {
+				return;
+			}
+			group.innerHTML = '';
+
+			enabled.forEach(function (gatewayId, index) {
+				var label = document.createElement('label');
+				label.className = 'fundolar-gateway';
+				label.setAttribute('data-gateway', gatewayId);
+
+				var input = document.createElement('input');
+				input.type = 'radio';
+				input.name = 'gateway';
+				input.value = gatewayId;
+				if (index === 0) {
+					input.checked = true;
+				}
+
+				var tile = document.createElement('span');
+				tile.className = 'fundolar-gateway__tile';
+
+				var fallback = document.createElement('span');
+				fallback.className = 'fundolar-gateway__fallback';
+				fallback.textContent = gatewayLabel(gatewayId);
+
+				var logo = gatewayLogo(gatewayId);
+				if (logo) {
+					var img = document.createElement('img');
+					img.src = logo;
+					img.alt = gatewayLabel(gatewayId);
+					img.loading = 'lazy';
+					img.width = 56;
+					img.height = 36;
+					img.className = 'fundolar-gateway__logo';
+					img.onerror = function () {
+						img.style.display = 'none';
+						fallback.style.display = 'block';
+					};
+					tile.appendChild(img);
+					fallback.style.display = 'none';
+				}
+				tile.appendChild(fallback);
+
+				var hint = document.createElement('span');
+				hint.className = 'fundolar-gateway__currency-hint';
+				hint.hidden = true;
+
+				label.appendChild(input);
+				label.appendChild(tile);
+				label.appendChild(hint);
+				group.appendChild(label);
+
+				input.addEventListener('change', onGatewayChange);
+			});
+
+			if (submitBtn) {
+				submitBtn.disabled = false;
+			}
+		}
+
 		function gatewayAllowsCurrency(gatewayId, currency) {
 			var meta = cfg.gatewayMeta && cfg.gatewayMeta[gatewayId];
 			if (!meta || !Array.isArray(meta.currencies) || meta.currencies.length === 0) {
@@ -682,6 +804,16 @@
 				lastCurrency = newCurrency;
 			});
 		}
+
+		ensureFreshNonce()
+			.then(function () {
+				ensureGatewaySectionFromConfig();
+				refreshGatewayAvailabilityByCurrency();
+				onGatewayChange();
+			})
+			.catch(function () {
+				ensureGatewaySectionFromConfig();
+			});
 
 		ensurePresetUsdData();
 		syncPresets();

@@ -234,13 +234,19 @@ class Fundolar_REST {
 	 * @return WP_REST_Response
 	 */
 	public static function bootstrap() {
-		Fundolar_Platform::maybe_sync_gateways();
+		Fundolar_Platform::ensure_gateways_synced_for_display();
+		$ready_gateways = Fundolar_Payments::gateways_ready_for_front();
+		$s              = Fundolar_Payments::get_settings();
 		$data = array(
 			'nonce'           => wp_create_nonce( 'fundolar_donate' ),
 			'rest_nonce'      => wp_create_nonce( 'wp_rest' ),
 			'platformFeeRate' => Fundolar_Fees::effective_percentage_for_js(),
-			'enabled'         => Fundolar_Payments::gateways_ready_for_front(),
+			'enabled'         => $ready_gateways,
+			'syncedGateways'  => array_values( array_unique( array_map( 'sanitize_key', (array) ( $s['enabled_gateways'] ?? array() ) ) ) ),
 			'gatewayMeta'     => Fundolar_Payments::synced_gateway_meta(),
+			'gatewayAssets'   => Fundolar_Payments::gateway_assets_for_js( $ready_gateways ),
+			'stripePk'        => isset( $s['stripe_publishable'] ) ? (string) $s['stripe_publishable'] : '',
+			'paypalClient'    => isset( $s['paypal_client_id'] ) ? (string) $s['paypal_client_id'] : '',
 		);
 		$response = new WP_REST_Response( $data );
 		$response->header( 'Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0' );
@@ -282,7 +288,7 @@ class Fundolar_REST {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public static function init_payment( WP_REST_Request $request ) {
-		Fundolar_Platform::maybe_sync_gateways( true );
+		Fundolar_Platform::ensure_gateways_synced_for_display( true );
 		$gateway = sanitize_key( (string) $request->get_param( 'gateway' ) );
 		$name    = sanitize_text_field( (string) $request->get_param( 'name' ) );
 		$email   = sanitize_email( (string) $request->get_param( 'email' ) );

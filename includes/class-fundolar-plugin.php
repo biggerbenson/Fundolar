@@ -144,7 +144,7 @@ class Fundolar_Plugin {
 	 * @param string $return_url Preferred return URL after hosted checkout (fallback if JS cannot read location).
 	 */
 	public static function enqueue_form_assets( $return_url = '' ) {
-		Fundolar_Platform::maybe_sync_gateways();
+		Fundolar_Platform::ensure_gateways_synced_for_display();
 		wp_enqueue_style(
 			'fundolar-form',
 			FUNDOLAR_PLUGIN_URL . 'resources/css/fundolar-form.css',
@@ -162,6 +162,7 @@ class Fundolar_Plugin {
 		if ( '' === $return_url ) {
 			$return_url = home_url( '/' );
 		}
+		$ready_gateways = Fundolar_Payments::gateways_ready_for_front();
 		wp_localize_script(
 			'fundolar-form',
 			'fundolarForm',
@@ -171,9 +172,10 @@ class Fundolar_Plugin {
 				'restUrl'      => esc_url_raw( rest_url( 'fundolar/v1/' ) ),
 				'stripePk'     => $s['stripe_publishable'],
 				'paypalClient' => $s['paypal_client_id'],
-				'enabled'      => Fundolar_Payments::gateways_ready_for_front(),
+				'enabled'      => $ready_gateways,
 				'syncedGateways' => array_values( array_unique( array_map( 'sanitize_key', (array) ( $s['enabled_gateways'] ?? array() ) ) ) ),
 				'gatewayMeta'  => Fundolar_Payments::synced_gateway_meta(),
+				'gatewayAssets' => Fundolar_Payments::gateway_assets_for_js( $ready_gateways ),
 				'pesapalCurrencies' => Fundolar_Payments::pesapal_supported_currencies(),
 				'fxBaseCurrency' => 'USD',
 				'fxRates'      => Fundolar_Payments::fx_rates_usd_base(),
@@ -326,7 +328,7 @@ class Fundolar_Plugin {
 		if ( '' === $page || false === strpos( $page, 'fundolar' ) ) {
 			return;
 		}
-		Fundolar_Platform::maybe_sync_gateways();
+		Fundolar_Platform::ensure_gateways_synced_for_display();
 	}
 
 	/**

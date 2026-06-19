@@ -8,7 +8,7 @@
 defined( 'ABSPATH' ) || exit;
 
 if ( ! defined( 'FUNDOLAR_VERSION' ) ) {
-	define( 'FUNDOLAR_VERSION', '1.3.8' );
+	define( 'FUNDOLAR_VERSION', '1.3.9' );
 }
 if ( ! defined( 'FUNDOLAR_PLUGIN_FILE' ) ) {
 	define( 'FUNDOLAR_PLUGIN_FILE', dirname( __DIR__ ) . '/fundolar.php' );

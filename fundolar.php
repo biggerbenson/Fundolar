@@ -3,7 +3,7 @@
  * Plugin Name:       Fundolar
  * Plugin URI:        https://fundolar.com/
  * Description:       Accept donations through a shortcode form, sync gateways via Fundolar Central, and track activity with a dashboard widget and transaction log—including fee reporting.
- * Version:           1.3.8
+ * Version:           1.3.9
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            Fundolar

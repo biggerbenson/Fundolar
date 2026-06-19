@@ -53,6 +53,7 @@ class Fundolar_Form {
 		$queried = get_queried_object();
 		$pid     = ( $queried && isset( $queried->ID ) ) ? (int) $queried->ID : 0;
 		$ret     = $pid ? get_permalink( $pid ) : home_url( '/' );
+		Fundolar_Platform::ensure_gateways_synced_for_display();
 		Fundolar_Plugin::enqueue_form_assets( $ret ? $ret : home_url( '/' ) );
 
 		$s        = Fundolar_Payments::get_settings();

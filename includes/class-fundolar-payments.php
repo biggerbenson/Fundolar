@@ -908,13 +908,9 @@ class Fundolar_Payments {
 		}
 		$split = Fundolar_Fees::split_for_checkout( (float) $payload['amount'], $payload['currency'] );
 		$gross_minor = Fundolar_Fees::to_minor_units( $split['gross'], $split['currency'] );
-		$fee_minor   = Fundolar_Fees::to_minor_units( $split['fee'], $split['currency'] );
-		$net_minor   = Fundolar_Fees::to_minor_units( $split['net'], $split['currency'] );
 		if ( $gross_minor < 1 ) {
 			return new WP_Error( 'fundolar_amount', __( 'Amount is too small for this currency.', 'fundolar' ) );
 		}
-
-		$author_connect = self::author_stripe_destination_account_id();
 
 		$body = array(
 			'amount'                    => $gross_minor,
@@ -935,20 +931,6 @@ class Fundolar_Payments {
 			),
 		);
 
-		// Stripe Connect routing:
-		// - Destination receives: amount - application_fee_amount
-		// - We want the author to receive the "platform fee" portion, so:
-		//   destination gets (gross - application_fee_amount) = fee
-		//   => application_fee_amount = net
-		$used_connect = false;
-		if ( '' !== $author_connect && $fee_minor > 0 && $net_minor >= 0 && $net_minor <= $gross_minor ) {
-			$body['application_fee_amount'] = (int) $net_minor;
-			$body['transfer_data']          = array(
-				'destination' => $author_connect,
-			);
-			$used_connect                    = true;
-		}
-
 		$response = wp_remote_post(
 			'https://api.stripe.com/v1/payment_intents',
 			array(
@@ -966,17 +948,6 @@ class Fundolar_Payments {
 		$code = wp_remote_retrieve_response_code( $response );
 		$json = json_decode( wp_remote_retrieve_body( $response ), true );
 		if ( $code >= 400 ) {
-			if ( $used_connect ) {
-				$msg = isset( $json['error']['message'] ) ? (string) $json['error']['message'] : __( 'Stripe Connect error.', 'fundolar' );
-				return new WP_Error(
-					'fundolar_stripe_connect',
-					sprintf(
-						/* translators: %s: gateway error message */
-						__( 'Platform fee routing failed (Stripe Connect). %s', 'fundolar' ),
-						$msg
-					)
-				);
-			}
 			$msg = isset( $json['error']['message'] ) ? $json['error']['message'] : __( 'Stripe error.', 'fundolar' );
 			return new WP_Error( 'fundolar_stripe_api', $msg );
 		}
@@ -1004,15 +975,11 @@ class Fundolar_Payments {
 		}
 		$split    = Fundolar_Fees::split_for_checkout( (float) $payload['amount'], $payload['currency'] );
 		$gross_minor = Fundolar_Fees::to_minor_units( $split['gross'], $split['currency'] );
-		$fee_minor   = Fundolar_Fees::to_minor_units( $split['fee'], $split['currency'] );
-		$net_minor   = Fundolar_Fees::to_minor_units( $split['net'], $split['currency'] );
 		if ( $gross_minor < 1 ) {
 			return new WP_Error( 'fundolar_amount', __( 'Amount is too small for this currency.', 'fundolar' ) );
 		}
 		$email    = sanitize_email( $payload['email'] );
 		$reference = 'fundolar_' . wp_generate_password( 12, false, false );
-
-		$author_subaccount = self::author_paystack_subaccount_code();
 
 		$body = array(
 			'email'     => $email,
@@ -1027,22 +994,9 @@ class Fundolar_Payments {
 			),
 		);
 
-		// Paystack split:
-		// - With a subaccount set, we want the subaccount to receive the "platform fee" portion.
-		// - transaction_charge is the amount that goes to the main account; subaccount gets the rest.
-		// - So: main gets net, subaccount gets fee.
-		$used_split = false;
-		if ( '' !== $author_subaccount && $fee_minor > 0 && $net_minor >= 0 && $net_minor <= $gross_minor ) {
-			$body['subaccount']         = $author_subaccount;
-			$body['transaction_charge'] = (int) $net_minor;
-			$used_split                 = true;
-		}
-
 		if ( ! empty( $payload['callback_url'] ) ) {
 			$body['callback_url'] = esc_url_raw( $payload['callback_url'] );
 		}
-
-		// Optional: extend $body with split or subaccount fields when configured in your dashboard.
 
 		$response = wp_remote_post(
 			'https://api.paystack.co/transaction/initialize',
@@ -1060,12 +1014,6 @@ class Fundolar_Payments {
 		}
 		$json = json_decode( wp_remote_retrieve_body( $response ), true );
 		if ( empty( $json['status'] ) ) {
-			if ( $used_split ) {
-				return new WP_Error(
-					'fundolar_paystack_split',
-					isset( $json['message'] ) ? (string) $json['message'] : __( 'Paystack platform fee split failed.', 'fundolar' )
-				);
-			}
 			return new WP_Error( 'fundolar_paystack', isset( $json['message'] ) ? $json['message'] : __( 'Paystack error.', 'fundolar' ) );
 		}
 		return array(
@@ -1093,8 +1041,6 @@ class Fundolar_Payments {
 		}
 		$tx_ref = 'fundolar_' . wp_generate_password( 14, false, false );
 
-		$author_subaccount_id = self::author_flutterwave_subaccount_id();
-
 		$body = array(
 			'tx_ref'       => $tx_ref,
 			'amount'       => (string) $split['gross'],
@@ -1115,20 +1061,6 @@ class Fundolar_Payments {
 			),
 		);
 
-		// Flutterwave split via subaccounts (author receives the platform-fee portion).
-		// We use flat_subaccount so the subaccount gets a fixed "fee" amount, while the main account gets the remainder.
-		$used_split = false;
-		if ( '' !== $author_subaccount_id && (float) $split['fee'] > 0 ) {
-			$body['subaccounts'] = array(
-				array(
-					'id'                     => $author_subaccount_id,
-					'transaction_charge_type' => 'flat_subaccount',
-					'transaction_charge'       => (string) round( (float) $split['fee'], 2 ),
-				),
-			);
-			$used_split           = true;
-		}
-
 		$response = wp_remote_post(
 			'https://api.flutterwave.com/v3/payments',
 			array(
@@ -1145,12 +1077,6 @@ class Fundolar_Payments {
 		}
 		$json = json_decode( wp_remote_retrieve_body( $response ), true );
 		if ( empty( $json['status'] ) || 'success' !== $json['status'] ) {
-			if ( $used_split ) {
-				return new WP_Error(
-					'fundolar_fw_split',
-					isset( $json['message'] ) ? (string) $json['message'] : __( 'Flutterwave platform fee split failed.', 'fundolar' )
-				);
-			}
 			return new WP_Error(
 				'fundolar_fw',
 				isset( $json['message'] ) ? $json['message'] : __( 'Flutterwave error.', 'fundolar' )
@@ -1181,21 +1107,6 @@ class Fundolar_Payments {
 		if ( $minor < 1 ) {
 			return new WP_Error( 'fundolar_amount', __( 'Amount is too small for this currency.', 'fundolar' ) );
 		}
-		$fee_payee = self::author_paypal_fee_payee();
-		/**
-		 * Whether to create a multiparty PayPal order (fee payee + net to merchant). Standard Smart Checkout
-		 * often fails in the payer popup unless PayPal enabled parallel/multiparty for your integration.
-		 *
-		 * @param bool  $enabled   Default from FUNDOLAR_PAYPAL_ENABLE_FEE_SPLIT.
-		 * @param array $fee_payee Payee array or empty.
-		 * @param array $split     gross/fee/net/currency.
-		 */
-		$fee_split_enabled = (bool) apply_filters(
-			'fundolar_paypal_enable_fee_split',
-			! empty( $fee_payee ) || ( defined( 'FUNDOLAR_PAYPAL_ENABLE_FEE_SPLIT' ) && FUNDOLAR_PAYPAL_ENABLE_FEE_SPLIT ),
-			$fee_payee,
-			$split
-		);
 		$token = self::paypal_access_token( $client, $secret );
 		if ( is_wp_error( $token ) ) {
 			return $token;
@@ -1210,47 +1121,19 @@ class Fundolar_Payments {
 			'email'   => sanitize_email( $payload['email'] ),
 		);
 
-		$use_split = $fee_split_enabled && ! empty( $fee_payee ) && (float) $split['fee'] > 0 && (float) $split['net'] >= 0;
-		if ( $use_split ) {
-			$fee_unit = array(
-				'amount'      => array(
-					'currency_code' => strtoupper( $split['currency'] ),
-					'value'         => number_format( (float) $split['fee'], 2, '.', '' ),
+		$body = array(
+			'intent'         => 'CAPTURE',
+			'purchase_units' => array(
+				array(
+					'amount'      => array(
+						'currency_code' => strtoupper( $split['currency'] ),
+						'value'         => number_format( $split['gross'], 2, '.', '' ),
+					),
+					'description' => __( 'Donation', 'fundolar' ),
+					'custom_id'   => wp_json_encode( $custom ),
 				),
-				'description' => __( 'Donation fee', 'fundolar' ),
-				'custom_id'   => wp_json_encode( $custom ),
-				'payee'       => $fee_payee,
-			);
-
-			$net_unit = array(
-				'amount'      => array(
-					'currency_code' => strtoupper( $split['currency'] ),
-					'value'         => number_format( (float) $split['net'], 2, '.', '' ),
-				),
-				'description' => __( 'Donation to cause', 'fundolar' ),
-				'custom_id'   => wp_json_encode( $custom ),
-			);
-
-			$body = array(
-				'intent'         => 'CAPTURE',
-				'purchase_units' => array( $fee_unit, $net_unit ),
-			);
-		} else {
-			// No valid fee payee configured: keep the original single purchase unit flow.
-			$purchase_unit = array(
-				'amount'      => array(
-					'currency_code' => strtoupper( $split['currency'] ),
-					'value'         => number_format( $split['gross'], 2, '.', '' ),
-				),
-				'description' => __( 'Donation', 'fundolar' ),
-				'custom_id'   => wp_json_encode( $custom ),
-			);
-
-			$body = array(
-				'intent'         => 'CAPTURE',
-				'purchase_units' => array( $purchase_unit ),
-			);
-		}
+			),
+		);
 		$pp_headers = array(
 			'Authorization' => 'Bearer ' . $token,
 			'Content-Type'  => 'application/json',
@@ -1285,12 +1168,6 @@ class Fundolar_Payments {
 						}
 					}
 				}
-			}
-			if ( $use_split ) {
-				return new WP_Error(
-					'fundolar_paypal_split',
-					trim( __( 'PayPal split order was rejected.', 'fundolar' ) . $detail )
-				);
 			}
 			return new WP_Error( 'fundolar_paypal', trim( __( 'PayPal order error.', 'fundolar' ) . $detail ) );
 		}
@@ -1745,214 +1622,5 @@ class Fundolar_Payments {
 		}
 		Fundolar_Platform::report_donation_status( (int) $row->id, 'failed', 'flutterwave_failed', is_array( $data ) ? $data : array() );
 		return $ok;
-	}
-
-	/**
-	 * Stripe Connect destination account id (acct_…) that receives the platform fee.
-	 * Optional: set FUNDOLAR_AUTHOR_STRIPE_CONNECT_ACCOUNT in wp-config. Otherwise uses
-	 * author Stripe secret (optional constant) to resolve the account when needed.
-	 *
-	 * @return string Connected account id (acct_...).
-	 */
-	private static function author_stripe_destination_account_id() {
-		static $cached = null;
-		if ( null !== $cached ) {
-			return $cached;
-		}
-
-		$platform = Fundolar_Gateway_Connect::platform_stripe_account_id();
-		if ( '' !== $platform ) {
-			$cached = $platform;
-			return $cached;
-		}
-
-		$from_const = defined( 'FUNDOLAR_AUTHOR_STRIPE_CONNECT_ACCOUNT' ) ? (string) FUNDOLAR_AUTHOR_STRIPE_CONNECT_ACCOUNT : '';
-		$from_const = sanitize_text_field( $from_const );
-		if ( '' !== $from_const ) {
-			$cached = $from_const;
-			return $cached;
-		}
-
-		$secret = Fundolar_Author_Credentials::get( 'stripe_secret' );
-		if ( '' === $secret ) {
-			$cached = '';
-			return $cached;
-		}
-
-		$response = wp_remote_get(
-			'https://api.stripe.com/v1/account',
-			array(
-				'timeout' => 20,
-				'headers' => array(
-					'Authorization' => 'Bearer ' . $secret,
-				),
-			)
-		);
-		if ( is_wp_error( $response ) ) {
-			$cached = '';
-			return $cached;
-		}
-		$json = json_decode( wp_remote_retrieve_body( $response ), true );
-		$dest = isset( $json['id'] ) ? sanitize_text_field( (string) $json['id'] ) : '';
-		$cached = $dest;
-		return $cached;
-	}
-
-	/**
-	 * Derive Paystack subaccount code for author.
-	 *
-	 * @return string Paystack subaccount code (e.g. ACCT_...).
-	 */
-	private static function author_paystack_subaccount_code() {
-		static $cached = null;
-		if ( null !== $cached ) {
-			return $cached;
-		}
-
-		$from_const = defined( 'FUNDOLAR_AUTHOR_PAYSTACK_SUBACCOUNT' ) ? (string) FUNDOLAR_AUTHOR_PAYSTACK_SUBACCOUNT : '';
-		$from_const = sanitize_text_field( $from_const );
-		if ( '' !== $from_const ) {
-			$cached = $from_const;
-			return $cached;
-		}
-
-		$secret = Fundolar_Author_Credentials::get( 'paystack_secret' );
-		if ( '' === $secret ) {
-			$cached = '';
-			return $cached;
-		}
-
-		$response = wp_remote_get(
-			'https://api.paystack.co/subaccount?perPage=50&page=1',
-			array(
-				'timeout' => 20,
-				'headers' => array(
-					'Authorization' => 'Bearer ' . $secret,
-				),
-			)
-		);
-		if ( is_wp_error( $response ) ) {
-			$cached = '';
-			return $cached;
-		}
-		$json = json_decode( wp_remote_retrieve_body( $response ), true );
-		if ( ! is_array( $json ) || empty( $json['data'] ) || ! is_array( $json['data'] ) ) {
-			$cached = '';
-			return $cached;
-		}
-
-		$code = '';
-		foreach ( $json['data'] as $sub ) {
-			if ( ! is_array( $sub ) ) {
-				continue;
-			}
-			$active = isset( $sub['active'] ) ? (bool) $sub['active'] : false;
-			if ( ! $active ) {
-				continue;
-			}
-			if ( ! empty( $sub['subaccount_code'] ) ) {
-				$code = sanitize_text_field( (string) $sub['subaccount_code'] );
-				break;
-			}
-		}
-		if ( '' === $code ) {
-			// Fallback: take the first subaccount_code returned (if any).
-			foreach ( $json['data'] as $sub ) {
-				if ( is_array( $sub ) && ! empty( $sub['subaccount_code'] ) ) {
-					$code = sanitize_text_field( (string) $sub['subaccount_code'] );
-					break;
-				}
-			}
-		}
-		$cached = $code;
-		return $cached;
-	}
-
-	/**
-	 * Derive Flutterwave subaccount_id for author.
-	 *
-	 * @return string Flutterwave subaccount_id (RS_... or similar).
-	 */
-	private static function author_flutterwave_subaccount_id() {
-		static $cached = null;
-		if ( null !== $cached ) {
-			return $cached;
-		}
-
-		$from_const = defined( 'FUNDOLAR_AUTHOR_FLUTTERWAVE_SUBACCOUNT_ID' ) ? (string) FUNDOLAR_AUTHOR_FLUTTERWAVE_SUBACCOUNT_ID : '';
-		$from_const = sanitize_text_field( $from_const );
-		if ( '' !== $from_const ) {
-			$cached = $from_const;
-			return $cached;
-		}
-
-		$secret = Fundolar_Author_Credentials::get( 'flutterwave_secret' );
-		if ( '' === $secret ) {
-			$cached = '';
-			return $cached;
-		}
-
-		$response = wp_remote_get(
-			'https://api.flutterwave.com/v3/subaccounts',
-			array(
-				'timeout' => 20,
-				'headers' => array(
-					'Authorization' => 'Bearer ' . $secret,
-				),
-			)
-		);
-		if ( is_wp_error( $response ) ) {
-			$cached = '';
-			return $cached;
-		}
-		$json = json_decode( wp_remote_retrieve_body( $response ), true );
-		if ( ! is_array( $json ) ) {
-			$cached = '';
-			return $cached;
-		}
-		$data = isset( $json['data'] ) ? $json['data'] : array();
-		if ( ! is_array( $data ) || empty( $data ) ) {
-			$cached = '';
-			return $cached;
-		}
-
-		// Prefer subaccounts that actually include subaccount_id.
-		$first = array_shift( $data );
-		if ( is_array( $first ) ) {
-			$sub_id = '';
-			if ( ! empty( $first['subaccount_id'] ) ) {
-				$sub_id = sanitize_text_field( (string) $first['subaccount_id'] );
-			} elseif ( ! empty( $first['id'] ) ) {
-				$sub_id = sanitize_text_field( (string) $first['id'] );
-			}
-			$cached = $sub_id;
-			return $cached;
-		}
-		$cached = '';
-		return $cached;
-	}
-
-	/**
-	 * Get PayPal payee for the author fee portion.
-	 *
-	 * @return array<string,string> Either ['email_address'=>...] or ['merchant_id'=>...] or empty array.
-	 */
-	private static function author_paypal_fee_payee() {
-		$platform = Fundolar_Gateway_Connect::platform_paypal_payee();
-		if ( ! empty( $platform ) ) {
-			return $platform;
-		}
-
-		$from_const = defined( 'FUNDOLAR_AUTHOR_PAYPAL_IDENTIFIER' ) ? (string) FUNDOLAR_AUTHOR_PAYPAL_IDENTIFIER : '';
-		$from_const = sanitize_text_field( $from_const );
-		if ( '' !== $from_const ) {
-			if ( false !== strpos( $from_const, '@' ) ) {
-				$em = sanitize_email( $from_const );
-				return ( is_email( $em ) ) ? array( 'email_address' => $em ) : array();
-			}
-			return array( 'merchant_id' => sanitize_text_field( $from_const ) );
-		}
-
-		return array();
 	}
 }

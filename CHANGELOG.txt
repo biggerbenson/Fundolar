@@ -1,6 +1,18 @@
 Fundolar Plugin Changelog
 ========================
 
+Version 1.3.8 - 2026-06-10
+--------------------------
+- WordPress can now update Fundolar directly from GitHub (`biggerbenson/fundolar`).
+- Checks the latest GitHub release first, then the `main` branch version in `fundolar.php`.
+- One-click update from **Plugins → Update** when a newer version is published.
+
+Version 1.3.7 - 2026-06-10
+--------------------------
+- Removed PayPal, Stripe, Paystack, and Flutterwave gateway split routing at checkout.
+- Full donation amount now settles on Fundolar Central platform gateway accounts; platform fee and net to site are recorded in the ledger for later disbursement.
+- Fixes PayPal "split order was rejected" errors when donors pay with PayPal.
+
 Version 1.3.6 - 2026-06-10
 --------------------------
 - Dashboard KPIs and charts count **completed** donations only (volume, revenue, unique donors).

@@ -98,46 +98,21 @@ class Fundolar_Gateway_Connect {
 	}
 
 	/**
-	 * Platform Stripe Connect account that receives the 3.5% fee (acct_…).
+	 * @deprecated Ledger-only settlement; gateway split at checkout is no longer used.
 	 *
-	 * @return string
+	 * @return string Always empty.
 	 */
 	public static function platform_stripe_account_id() {
-		if ( defined( 'FUNDOLAR_PLATFORM_STRIPE_CONNECT_ACCOUNT' ) && '' !== (string) FUNDOLAR_PLATFORM_STRIPE_CONNECT_ACCOUNT ) {
-			return sanitize_text_field( (string) FUNDOLAR_PLATFORM_STRIPE_CONNECT_ACCOUNT );
-		}
-		if ( defined( 'FUNDOLAR_AUTHOR_STRIPE_CONNECT_ACCOUNT' ) && '' !== (string) FUNDOLAR_AUTHOR_STRIPE_CONNECT_ACCOUNT ) {
-			return sanitize_text_field( (string) FUNDOLAR_AUTHOR_STRIPE_CONNECT_ACCOUNT );
-		}
-		/**
-		 * Filter platform Stripe Connect destination for application fees.
-		 *
-		 * @param string $account_id Stripe account id or empty.
-		 */
-		return sanitize_text_field( (string) apply_filters( 'fundolar_platform_stripe_connect_account', '' ) );
+		return '';
 	}
 
 	/**
-	 * Platform PayPal partner payee for the 3.5% fee portion.
+	 * @deprecated Ledger-only settlement; gateway split at checkout is no longer used.
 	 *
-	 * @return array<string,string>
+	 * @return array<string,string> Always empty.
 	 */
 	public static function platform_paypal_payee() {
-		if ( defined( 'FUNDOLAR_PLATFORM_PAYPAL_PARTNER_ID' ) && '' !== (string) FUNDOLAR_PLATFORM_PAYPAL_PARTNER_ID ) {
-			$id = sanitize_text_field( (string) FUNDOLAR_PLATFORM_PAYPAL_PARTNER_ID );
-			if ( false !== strpos( $id, '@' ) ) {
-				$em = sanitize_email( $id );
-				return is_email( $em ) ? array( 'email_address' => $em ) : array();
-			}
-			return array( 'merchant_id' => $id );
-		}
-		/**
-		 * Filter platform PayPal payee for fee split orders.
-		 *
-		 * @param array<string,string> $payee Payee array or empty.
-		 */
-		$payee = apply_filters( 'fundolar_platform_paypal_payee', array() );
-		return is_array( $payee ) ? $payee : array();
+		return array();
 	}
 
 	/**

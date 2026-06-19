@@ -5,7 +5,7 @@ Tags: donations, fundraising, stripe, paypal, paystack
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.3.6
+Stable tag: 1.3.8
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -44,7 +44,8 @@ Churches, nonprofits, creators, and anyone who needs donations on WordPress with
 
 1. Upload the `fundolar` folder to `wp-content/plugins/`, or upload the ZIP via **Plugins → Add New → Upload Plugin**.
 2. Activate **Fundolar** under **Plugins**.
-3. In the admin, open **Fundolar → Settings** (or follow any onboarding links shown).
+3. Future updates: when a newer version is pushed to [GitHub](https://github.com/biggerbenson/fundolar), WordPress shows **Update now** on the Plugins screen (Dashboard → Updates). No WordPress.org account required.
+4. In the admin, open **Fundolar → Settings** (or follow any onboarding links shown).
 
 = Set up payments =
 
@@ -82,6 +83,10 @@ Donation records in your database may include donor email and name when the form
 = cURL error 6 / Could not resolve host =
 
 Set **Fundolar Central URL** to a hostname your web server’s DNS can resolve, or set `FUNDOLAR_CENTRAL_URL` in `wp-config.php`. You can also normalize the base URL with the `fundolar_platform_base_url` filter.
+
+= How do I update Fundolar from GitHub? =
+
+The plugin checks `https://github.com/biggerbenson/fundolar` for updates (latest GitHub Release, or the version on the `main` branch). When you publish a newer version, go to **Dashboard → Updates** or **Plugins** and click **Update now**. Override the repository with `FUNDOLAR_GITHUB_REPO` or branch with `FUNDOLAR_GITHUB_BRANCH` in `wp-config.php` if needed.
 
 = Where do I put official payment logos? =
 

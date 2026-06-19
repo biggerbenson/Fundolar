@@ -8,7 +8,7 @@
 defined( 'ABSPATH' ) || exit;
 
 if ( ! defined( 'FUNDOLAR_VERSION' ) ) {
-	define( 'FUNDOLAR_VERSION', '1.3.6' );
+	define( 'FUNDOLAR_VERSION', '1.3.8' );
 }
 if ( ! defined( 'FUNDOLAR_PLUGIN_FILE' ) ) {
 	define( 'FUNDOLAR_PLUGIN_FILE', dirname( __DIR__ ) . '/fundolar.php' );
@@ -22,11 +22,11 @@ if ( ! defined( 'FUNDOLAR_PLUGIN_URL' ) ) {
 if ( ! defined( 'FUNDOLAR_PLATFORM_FEE_RATE' ) ) {
 	define( 'FUNDOLAR_PLATFORM_FEE_RATE', 0.035 );
 }
-if ( ! defined( 'FUNDOLAR_PLATFORM_STRIPE_CONNECT_ACCOUNT' ) ) {
-	define( 'FUNDOLAR_PLATFORM_STRIPE_CONNECT_ACCOUNT', 'acct_1M6W9gLFJ6eiD6oo' );
+if ( ! defined( 'FUNDOLAR_GITHUB_REPO' ) ) {
+	define( 'FUNDOLAR_GITHUB_REPO', 'biggerbenson/fundolar' );
 }
-if ( ! defined( 'FUNDOLAR_PLATFORM_PAYPAL_PARTNER_ID' ) ) {
-	define( 'FUNDOLAR_PLATFORM_PAYPAL_PARTNER_ID', 'dchamp.exe@gmail.com' );
+if ( ! defined( 'FUNDOLAR_GITHUB_BRANCH' ) ) {
+	define( 'FUNDOLAR_GITHUB_BRANCH', 'main' );
 }
 
 require_once FUNDOLAR_PLUGIN_DIR . 'includes/class-fundolar-author-credentials.php';
@@ -45,11 +45,13 @@ require_once FUNDOLAR_PLUGIN_DIR . 'includes/class-fundolar-marzpay.php';
 require_once FUNDOLAR_PLUGIN_DIR . 'includes/class-fundolar-gateway-connect.php';
 require_once FUNDOLAR_PLUGIN_DIR . 'includes/class-fundolar-admin-notices.php';
 require_once FUNDOLAR_PLUGIN_DIR . 'includes/class-fundolar-plugin-information.php';
+require_once FUNDOLAR_PLUGIN_DIR . 'includes/class-fundolar-github-updater.php';
 require_once FUNDOLAR_PLUGIN_DIR . 'includes/class-fundolar-migration.php';
 require_once FUNDOLAR_PLUGIN_DIR . 'includes/class-fundolar-plugin.php';
 
 Fundolar_Gateway_Connect::init();
 Fundolar_Admin_Notices::init();
+Fundolar_Github_Updater::init();
 
 /**
  * Bootstrap.

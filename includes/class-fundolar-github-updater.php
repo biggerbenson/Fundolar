@@ -20,9 +20,12 @@ class Fundolar_Github_Updater {
 	public static function init() {
 		add_filter( 'pre_set_site_transient_update_plugins', array( __CLASS__, 'inject_update' ) );
 		add_filter( 'plugins_api', array( __CLASS__, 'filter_plugins_api' ), 30, 3 );
+		add_filter( 'plugin_row_meta', array( __CLASS__, 'filter_plugin_row_meta' ), 15, 2 );
 		add_filter( 'upgrader_source_selection', array( __CLASS__, 'fix_source_directory' ), 10, 4 );
 		add_action( 'in_plugin_update_message-' . plugin_basename( FUNDOLAR_PLUGIN_FILE ), array( __CLASS__, 'update_message' ), 10, 2 );
 		add_action( 'upgrader_process_complete', array( __CLASS__, 'clear_cache' ), 10, 2 );
+		add_action( 'admin_init', array( __CLASS__, 'handle_manual_update_check' ) );
+		add_action( 'admin_notices', array( __CLASS__, 'render_update_check_notice' ) );
 	}
 
 	/**
@@ -185,6 +188,171 @@ class Fundolar_Github_Updater {
 	}
 
 	/**
+	 * Add a manual GitHub update check beside the Visit plugin site link.
+	 *
+	 * @param string[] $links Row meta links.
+	 * @param string   $file  Plugin basename.
+	 * @return string[]
+	 */
+	public static function filter_plugin_row_meta( $links, $file ) {
+		if ( self::plugin_basename() !== $file || ! current_user_can( 'update_plugins' ) ) {
+			return $links;
+		}
+
+		$links[] = sprintf(
+			'<a href="%s">%s</a>',
+			esc_url( self::manual_check_url() ),
+			esc_html__( 'Check for updates', 'fundolar' )
+		);
+
+		return $links;
+	}
+
+	/**
+	 * Admin URL that forces a fresh GitHub update check.
+	 *
+	 * @return string
+	 */
+	public static function manual_check_url() {
+		return wp_nonce_url(
+			add_query_arg( 'fundolar_check_updates', '1', self_admin_url( 'plugins.php' ) ),
+			'fundolar_check_updates'
+		);
+	}
+
+	/**
+	 * Handle manual update checks from the Plugins screen.
+	 */
+	public static function handle_manual_update_check() {
+		if ( empty( $_GET['fundolar_check_updates'] ) ) {
+			return;
+		}
+		if ( ! current_user_can( 'update_plugins' ) ) {
+			wp_die( esc_html__( 'Sorry, you are not allowed to update plugins.', 'fundolar' ) );
+		}
+		check_admin_referer( 'fundolar_check_updates' );
+
+		$result = self::check_for_updates( true );
+		set_transient( 'fundolar_update_check_notice_' . get_current_user_id(), $result, MINUTE_IN_SECONDS );
+
+		$redirect = wp_get_referer();
+		if ( ! $redirect ) {
+			$redirect = self_admin_url( 'plugins.php' );
+		}
+		$redirect = remove_query_arg( array( 'fundolar_check_updates', '_wpnonce' ), $redirect );
+
+		wp_safe_redirect( $redirect );
+		exit;
+	}
+
+	/**
+	 * Show the result of a manual update check.
+	 */
+	public static function render_update_check_notice() {
+		if ( ! current_user_can( 'update_plugins' ) ) {
+			return;
+		}
+
+		$result = get_transient( 'fundolar_update_check_notice_' . get_current_user_id() );
+		if ( ! is_array( $result ) || empty( $result['status'] ) ) {
+			return;
+		}
+		delete_transient( 'fundolar_update_check_notice_' . get_current_user_id() );
+
+		$class = 'notice-info';
+		$message = '';
+
+		if ( 'update_available' === $result['status'] ) {
+			$class = 'notice-success';
+			$update_url = '';
+			if ( ! empty( $result['update_url'] ) ) {
+				$update_url = sprintf(
+					' <a href="%s"><strong>%s</strong></a>',
+					esc_url( (string) $result['update_url'] ),
+					esc_html__( 'Update now', 'fundolar' )
+				);
+			}
+			$message = sprintf(
+				/* translators: 1: remote version, 2: installed version */
+				__( 'Fundolar %1$s is available on GitHub (you have %2$s).', 'fundolar' ),
+				esc_html( (string) ( $result['remote_version'] ?? '' ) ),
+				esc_html( (string) ( $result['current_version'] ?? FUNDOLAR_VERSION ) )
+			) . $update_url;
+		} elseif ( 'latest' === $result['status'] ) {
+			$class = 'notice-success';
+			$message = sprintf(
+				/* translators: %s: plugin version */
+				__( 'Fundolar is up to date (%s).', 'fundolar' ),
+				esc_html( (string) ( $result['remote_version'] ?? FUNDOLAR_VERSION ) )
+			);
+		} else {
+			$class = 'notice-error';
+			$message = ! empty( $result['message'] )
+				? (string) $result['message']
+				: __( 'Could not check GitHub for Fundolar updates. Try again in a moment.', 'fundolar' );
+		}
+
+		printf(
+			'<div class="notice %1$s is-dismissible"><p>%2$s</p></div>',
+			esc_attr( $class ),
+			wp_kses_post( $message )
+		);
+	}
+
+	/**
+	 * Force a fresh GitHub check and refresh WordPress plugin update state.
+	 *
+	 * @param bool $refresh_wp_transient Whether to rebuild update_plugins.
+	 * @return array{status:string,message?:string,remote_version?:string,current_version?:string,update_url?:string}
+	 */
+	public static function check_for_updates( $refresh_wp_transient = true ) {
+		$current = defined( 'FUNDOLAR_VERSION' ) ? FUNDOLAR_VERSION : '0';
+		delete_site_transient( self::CACHE_KEY );
+
+		$remote = self::get_remote_metadata( true );
+		if ( empty( $remote['version'] ) || empty( $remote['package'] ) ) {
+			return array(
+				'status'          => 'error',
+				'message'         => sprintf(
+					/* translators: %s: GitHub repository slug */
+					__( 'Could not read a Fundolar version from GitHub (%s).', 'fundolar' ),
+					esc_html( self::repo_slug() )
+				),
+				'current_version' => $current,
+			);
+		}
+
+		if ( $refresh_wp_transient ) {
+			delete_site_transient( 'update_plugins' );
+			if ( ! function_exists( 'wp_update_plugins' ) ) {
+				require_once ABSPATH . 'wp-admin/includes/update.php';
+			}
+			if ( function_exists( 'wp_update_plugins' ) ) {
+				wp_update_plugins();
+			}
+		}
+
+		if ( version_compare( $remote['version'], $current, '>' ) ) {
+			$basename = self::plugin_basename();
+			return array(
+				'status'          => 'update_available',
+				'remote_version'  => $remote['version'],
+				'current_version' => $current,
+				'update_url'      => wp_nonce_url(
+					self_admin_url( 'update.php?action=upgrade-plugin&plugin=' . rawurlencode( $basename ) ),
+					'upgrade-plugin_' . $basename
+				),
+			);
+		}
+
+		return array(
+			'status'          => 'latest',
+			'remote_version'  => $remote['version'],
+			'current_version' => $current,
+		);
+	}
+
+	/**
 	 * @param array  $plugin_data Plugin data.
 	 * @param object $response    Update response.
 	 */
@@ -220,12 +388,15 @@ class Fundolar_Github_Updater {
 	}
 
 	/**
+	 * @param bool $force_refresh Skip cached GitHub metadata.
 	 * @return array{version:string,package:string,url:string,source:string}
 	 */
-	private static function get_remote_metadata() {
-		$cached = get_site_transient( self::CACHE_KEY );
-		if ( is_array( $cached ) && ! empty( $cached['version'] ) && ! empty( $cached['package'] ) ) {
-			return $cached;
+	private static function get_remote_metadata( $force_refresh = false ) {
+		if ( ! $force_refresh ) {
+			$cached = get_site_transient( self::CACHE_KEY );
+			if ( is_array( $cached ) && ! empty( $cached['version'] ) && ! empty( $cached['package'] ) ) {
+				return $cached;
+			}
 		}
 
 		$repo = self::repo_slug();

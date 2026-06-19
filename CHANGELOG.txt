@@ -1,6 +1,11 @@
 Fundolar Plugin Changelog
 ========================
 
+Version 1.3.11 - 2026-06-10
+--------------------------
+- Plugins screen: **Check for updates** link beside Visit plugin site to pull GitHub immediately.
+- Manual check clears the update cache and shows an **Update now** link when a newer release is available.
+
 Version 1.3.10 - 2026-06-10
 --------------------------
 - Fix duplicate "Fundolar" entries on the Plugins screen caused by fundolar.php and fundora.php both registering as plugins.

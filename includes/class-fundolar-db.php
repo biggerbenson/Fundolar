@@ -137,7 +137,10 @@ class Fundolar_DB {
 	 */
 	public static function get( $id ) {
 		global $wpdb;
-		return $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . self::table() . ' WHERE id = %d', $id ) );
+		$table = self::table();
+		// Table name comes from $wpdb->prefix + fixed slug (not user input).
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table} WHERE id = %d", (int) $id ) );
 	}
 
 	/**
@@ -415,9 +418,11 @@ class Fundolar_DB {
 		}
 		$like1 = '%"platform_donation_id":' . $platform_donation_id . ',%';
 		$like2 = '%"platform_donation_id":' . $platform_donation_id . '}%';
+		$table = self::table();
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name is prefixed constant, not user input.
 		$ids   = $wpdb->get_col(
 			$wpdb->prepare(
-				'SELECT id FROM ' . self::table() . ' WHERE meta LIKE %s OR meta LIKE %s',
+				"SELECT id FROM {$table} WHERE meta LIKE %s OR meta LIKE %s",
 				$like1,
 				$like2
 			)

@@ -131,6 +131,33 @@ class Fundolar_REST {
 
 		register_rest_route(
 			self::NS,
+			'/payoneer/verify',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'payoneer_verify' ),
+				'permission_callback' => array( __CLASS__, 'permission_donate_request' ),
+				'args'                => array(
+					'nonce'     => array(
+						'type'              => 'string',
+						'required'          => false,
+						'sanitize_callback' => array( __CLASS__, 'sanitize_nonce_param' ),
+					),
+					'reference' => array(
+						'type'              => 'string',
+						'required'          => true,
+						'sanitize_callback' => 'sanitize_text_field',
+					),
+					'long_id'   => array(
+						'type'              => 'string',
+						'required'          => false,
+						'sanitize_callback' => 'sanitize_text_field',
+					),
+				),
+			)
+		);
+
+		register_rest_route(
+			self::NS,
 			'/webhooks/marzpay',
 			array(
 				'methods'             => 'POST',
@@ -155,6 +182,11 @@ class Fundolar_REST {
 					'transaction_id' => array(
 						'type'              => 'integer',
 						'required'          => true,
+					),
+					'reference'      => array(
+						'type'              => 'string',
+						'required'          => true,
+						'sanitize_callback' => 'sanitize_text_field',
 					),
 				),
 			)
@@ -189,18 +221,13 @@ class Fundolar_REST {
 
 	/**
 	 * Whether the current request targets a public donation POST route.
+	 * Uses REQUEST_URI only (no unsanitized query input).
 	 *
 	 * @return bool
 	 */
 	private static function is_fundolar_donate_post_route() {
-		$slug = '(init-payment|paypal/capture|stripe/sync-intent|marzpay/status)';
-		if ( ! empty( $_GET['rest_route'] ) ) {
-			$route = (string) wp_unslash( $_GET['rest_route'] );
-			if ( preg_match( '#^/?fundolar/v1/' . $slug . '$#i', $route ) ) {
-				return true;
-			}
-		}
-		$uri  = isset( $_SERVER['REQUEST_URI'] ) ? wp_unslash( $_SERVER['REQUEST_URI'] ) : '';
+		$slug = '(init-payment|paypal/capture|stripe/sync-intent|payoneer/verify|marzpay/status)';
+		$uri  = isset( $_SERVER['REQUEST_URI'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
 		$path = (string) wp_parse_url( $uri, PHP_URL_PATH );
 		return (bool) ( $path && preg_match( '#/fundolar/v1/' . $slug . '$#i', $path ) );
 	}
@@ -364,6 +391,53 @@ class Fundolar_REST {
 					'gateway'        => 'stripe',
 					'client_secret'  => $res['client_secret'],
 					'transaction_id' => $tid,
+					'receipt'        => $split['gross'],
+				)
+			);
+		}
+
+		if ( 'payoneer' === $gateway ) {
+			$res = Fundolar_Payments::payoneer_create_list( $payload );
+			if ( is_wp_error( $res ) ) {
+				return $res;
+			}
+			$tid = Fundolar_DB::insert_checkout_transaction(
+				$name,
+				$email,
+				$split,
+				'payoneer',
+				$res['transaction_id'],
+				array(
+					'type'    => 'payoneer_list',
+					'long_id' => $res['long_id'],
+				)
+			);
+			if ( ! $tid ) {
+				return new WP_Error( 'fundolar_db', __( 'Could not start payment. Please try again.', 'fundolar' ), array( 'status' => 500 ) );
+			}
+			Fundolar_Platform::report_donation_created(
+				(int) $tid,
+				array(
+					'donor_name'             => $name,
+					'donor_email'            => $email,
+					'payment_gateway'        => 'payoneer',
+					'gateway_payment_intent' => $res['long_id'],
+					'gateway_reference'      => $res['transaction_id'],
+					'currency'               => $split['currency'],
+					'gross_amount'           => $split['gross'],
+					'source_channel'         => 'wordpress_plugin',
+				)
+			);
+			return rest_ensure_response(
+				array(
+					'ok'             => true,
+					'gateway'        => 'payoneer',
+					'long_id'        => $res['long_id'],
+					'list_url'       => $res['list_url'],
+					'hosted_url'     => $res['hosted_url'],
+					'env'            => $res['env'],
+					'transaction_id' => $tid,
+					'reference'      => $res['transaction_id'],
 					'receipt'        => $split['gross'],
 				)
 			);
@@ -916,6 +990,25 @@ class Fundolar_REST {
 	}
 
 	/**
+	 * After Payoneer Checkout cards succeed, re-check LIST status and complete the local row.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public static function payoneer_verify( WP_REST_Request $request ) {
+		$reference = sanitize_text_field( (string) $request->get_param( 'reference' ) );
+		$long_id   = sanitize_text_field( (string) $request->get_param( 'long_id' ) );
+		if ( '' === $reference ) {
+			return new WP_Error( 'fundolar_payoneer', __( 'Invalid payment reference.', 'fundolar' ), array( 'status' => 400 ) );
+		}
+		$ok = Fundolar_Payments::payoneer_verify_and_update( $reference, $long_id );
+		if ( ! $ok ) {
+			return new WP_Error( 'fundolar_payoneer', __( 'Could not verify payment.', 'fundolar' ), array( 'status' => 400 ) );
+		}
+		return rest_ensure_response( array( 'ok' => true ) );
+	}
+
+	/**
 	 * After client confirms payment, verify status with Stripe and update the local row.
 	 *
 	 * @param WP_REST_Request $request Request.
@@ -997,8 +1090,13 @@ class Fundolar_REST {
 	 */
 	public static function marzpay_status( WP_REST_Request $request ) {
 		$tid = (int) $request->get_param( 'transaction_id' );
-		if ( $tid < 1 ) {
+		$ref = sanitize_text_field( (string) $request->get_param( 'reference' ) );
+		if ( $tid < 1 || '' === $ref ) {
 			return new WP_Error( 'fundolar_marzpay', __( 'Invalid transaction.', 'fundolar' ), array( 'status' => 400 ) );
+		}
+		$row = Fundolar_DB::get( $tid );
+		if ( ! $row || 'mobile_money_ug' !== $row->gateway || ! hash_equals( (string) $row->gateway_ref, $ref ) ) {
+			return new WP_Error( 'fundolar_marzpay', __( 'Invalid transaction.', 'fundolar' ), array( 'status' => 403 ) );
 		}
 		$res = Fundolar_Payments::marzpay_sync_transaction( $tid );
 		if ( is_wp_error( $res ) ) {

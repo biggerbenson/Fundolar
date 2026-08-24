@@ -203,16 +203,20 @@ class Fundolar_Form {
 					<p class="fundolar-notice">
 						<?php
 						if ( in_array( 'mobile_money_ug', $enabled_toggled, true ) && ! in_array( 'mobile_money_ug', $enabled, true ) ) {
-							esc_html_e( 'Mobile Money (UG) is enabled in Central but credentials have not synced yet. Open Fundolar → Settings → Payments and click Sync gateways.', 'fundolar' );
+							esc_html_e( 'Mobile Money (UG) is enabled in Fundolar Central but has not synced yet. Open Fundolar → Settings → Payments and click Sync gateways.', 'fundolar' );
 						} else {
-							esc_html_e( 'Payment setup is still completing. Please try again shortly.', 'fundolar' );
+							esc_html_e( 'Payment methods are enabled in Fundolar Central but not fully configured yet. Finish setup in your Fundolar dashboard, then sync again under Settings → Payments.', 'fundolar' );
 						}
 						?>
 					</p>
 				<?php else : ?>
-					<p class="fundolar-notice"><?php esc_html_e( 'No payment methods are available. Connect Fundolar Central under Settings → Payments and sync gateways.', 'fundolar' ); ?></p>
+					<p class="fundolar-notice"><?php esc_html_e( 'No payment methods are available yet. Connect Fundolar Central under Settings → Payments and sync gateways.', 'fundolar' ); ?></p>
 				<?php endif; ?>
 				<div id="fundolar-card-element" class="fundolar-stripe-wrap" hidden></div>
+				<div id="fundolar-payoneer-wrap" class="fundolar-payoneer-wrap" hidden>
+					<p class="fundolar-field__hint"><?php esc_html_e( 'Secure Payoneer card fields will load below after you click Donate.', 'fundolar' ); ?></p>
+					<div id="fundolar-payoneer-card-element" class="fundolar-payoneer-cards"></div>
+				</div>
 				<div id="fundolar-paypal-container" class="fundolar-paypal-wrap" hidden></div>
 				<div id="fundolar-mobile-money-wrap" class="fundolar-mobile-money-wrap" hidden>
 					<div class="fundolar-field">

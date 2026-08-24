@@ -35,6 +35,7 @@ class Fundolar_Gateway_Connect {
 				'page'           => 'fundolar-settings',
 				'fundolar_oauth' => 'stripe',
 				'state'          => $state,
+				'_wpnonce'       => wp_create_nonce( 'fundolar_oauth_stripe' ),
 			),
 			admin_url( 'admin.php' )
 		);
@@ -73,6 +74,7 @@ class Fundolar_Gateway_Connect {
 				'page'           => 'fundolar-settings',
 				'fundolar_oauth' => 'paypal',
 				'state'          => $state,
+				'_wpnonce'       => wp_create_nonce( 'fundolar_oauth_paypal' ),
 			),
 			admin_url( 'admin.php' )
 		);
@@ -127,10 +129,17 @@ class Fundolar_Gateway_Connect {
 		}
 
 		$gateway = sanitize_key( wp_unslash( $_GET['fundolar_oauth'] ) );
-		$state   = sanitize_text_field( wp_unslash( $_GET['state'] ) );
 		if ( ! in_array( $gateway, array( 'stripe', 'paypal' ), true ) ) {
 			return;
 		}
+
+		$nonce = isset( $_GET['_wpnonce'] ) ? sanitize_text_field( wp_unslash( $_GET['_wpnonce'] ) ) : '';
+		if ( ! $nonce || ! wp_verify_nonce( $nonce, 'fundolar_oauth_' . $gateway ) ) {
+			add_settings_error( 'fundolar', 'oauth-nonce', __( 'Invalid connection request. Please try again.', 'fundolar' ), 'error' );
+			return;
+		}
+
+		$state = sanitize_text_field( wp_unslash( $_GET['state'] ) );
 
 		$uid = get_transient( self::OAUTH_TRANSIENT_PREFIX . $gateway . '_' . $state );
 		delete_transient( self::OAUTH_TRANSIENT_PREFIX . $gateway . '_' . $state );
@@ -140,7 +149,9 @@ class Fundolar_Gateway_Connect {
 		}
 
 		$out = Fundolar_Payments::get_settings();
-		$out['payment_mode'] = Fundolar_Payments::MODE_CENTRAL;
+		if ( ! Fundolar_Payments::is_central_mode() ) {
+			$out['payment_mode'] = Fundolar_Payments::MODE_OWN_KEYS;
+		}
 
 		if ( 'stripe' === $gateway ) {
 			$pk = isset( $_GET['stripe_publishable_key'] ) ? sanitize_text_field( wp_unslash( $_GET['stripe_publishable_key'] ) ) : '';

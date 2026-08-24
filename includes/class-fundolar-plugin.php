@@ -35,7 +35,9 @@ class Fundolar_Plugin {
 	 * Fundolar_Plugin constructor.
 	 */
 	private function __construct() {
-		Fundolar_Plugin_Information::init();
+		if ( class_exists( 'Fundolar_Plugin_Information' ) ) {
+			Fundolar_Plugin_Information::init();
+		}
 		add_action( 'plugins_loaded', array( 'Fundolar_Migration', 'boot' ), 5 );
 		add_action( 'init', array( $this, 'load_i18n' ) );
 		add_action( 'init', array( $this, 'register_shortcode' ) );
@@ -66,7 +68,7 @@ class Fundolar_Plugin {
 			update_option(
 				Fundolar_Payments::OPTION,
 				array(
-					'enabled_gateways'   => array(),
+					'enabled_gateways'   => array( 'stripe' ),
 					'payment_mode'       => Fundolar_Payments::MODE_CENTRAL,
 					'preset_amounts'     => array( 10, 20, 50, 100, 200 ),
 					'platform_base_url' => Fundolar_Platform::PLATFORM_BASE_URL,
@@ -226,7 +228,9 @@ class Fundolar_Plugin {
 	 * @param string $hook Hook.
 	 */
 	public function enqueue_admin( $hook ) {
-		Fundolar_Plugin_Information::enqueue_thickbox_on_plugins_screen( $hook );
+		if ( class_exists( 'Fundolar_Plugin_Information' ) ) {
+			Fundolar_Plugin_Information::enqueue_thickbox_on_plugins_screen( $hook );
+		}
 		if ( 'index.php' === $hook ) {
 			wp_enqueue_style( 'fundolar-admin', FUNDOLAR_PLUGIN_URL . 'resources/css/fundolar-admin.css', array(), FUNDOLAR_VERSION );
 			wp_enqueue_script(
@@ -286,6 +290,10 @@ class Fundolar_Plugin {
 			return;
 		}
 		$g = isset( $_GET[ $gateway_param ] ) ? sanitize_key( wp_unslash( $_GET[ $gateway_param ] ) ) : '';
+		$rtn = isset( $_GET['fundolar_rtn'] ) ? sanitize_text_field( wp_unslash( $_GET['fundolar_rtn'] ) ) : '';
+
+		$clean_args = array( 'fundolar_gateway', Fundolar_Migration::LEGACY_GATEWAY_PARAM, 'fundolar_rtn', 'reference', 'trxref', 'tx_ref', 'transaction_id', 'status', 'OrderTrackingId', 'OrderMerchantReference', 'OrderNotificationType' );
+
 		if ( 'paystack' === $g ) {
 			$ref = '';
 			if ( isset( $_GET['reference'] ) ) {
@@ -293,28 +301,38 @@ class Fundolar_Plugin {
 			} elseif ( isset( $_GET['trxref'] ) ) {
 				$ref = sanitize_text_field( wp_unslash( $_GET['trxref'] ) );
 			}
-			if ( $ref ) {
+			if ( $ref && Fundolar_Payments::verify_gateway_return_nonce( 'paystack', $ref, $rtn ) ) {
 				Fundolar_Payments::paystack_verify_and_update( $ref );
 			}
-			wp_safe_redirect( remove_query_arg( array( 'fundolar_gateway', Fundolar_Migration::LEGACY_GATEWAY_PARAM, 'reference', 'trxref' ) ) );
+			wp_safe_redirect( remove_query_arg( $clean_args ) );
 			exit;
 		}
 		if ( 'flutterwave' === $g ) {
 			$tx  = isset( $_GET['tx_ref'] ) ? sanitize_text_field( wp_unslash( $_GET['tx_ref'] ) ) : '';
 			$tid = isset( $_GET['transaction_id'] ) ? sanitize_text_field( wp_unslash( $_GET['transaction_id'] ) ) : '';
-			if ( $tx && $tid ) {
+			if ( $tx && $tid && Fundolar_Payments::verify_gateway_return_nonce( 'flutterwave', $tx, $rtn ) ) {
 				Fundolar_Payments::flutterwave_verify_and_update( $tx, $tid );
 			}
-			wp_safe_redirect( remove_query_arg( array( 'fundolar_gateway', Fundolar_Migration::LEGACY_GATEWAY_PARAM, 'tx_ref', 'transaction_id', 'status' ) ) );
+			wp_safe_redirect( remove_query_arg( $clean_args ) );
 			exit;
 		}
 		if ( 'pesapal' === $g ) {
 			$tracking  = isset( $_GET['OrderTrackingId'] ) ? sanitize_text_field( wp_unslash( $_GET['OrderTrackingId'] ) ) : '';
 			$reference = isset( $_GET['OrderMerchantReference'] ) ? sanitize_text_field( wp_unslash( $_GET['OrderMerchantReference'] ) ) : '';
-			if ( $tracking ) {
+			$nonce_ref = '' !== $reference ? $reference : $tracking;
+			if ( $tracking && Fundolar_Payments::verify_gateway_return_nonce( 'pesapal', $nonce_ref, $rtn ) ) {
 				Fundolar_Payments::pesapal_verify_and_update( $tracking, $reference );
 			}
-			wp_safe_redirect( remove_query_arg( array( 'fundolar_gateway', Fundolar_Migration::LEGACY_GATEWAY_PARAM, 'OrderTrackingId', 'OrderMerchantReference', 'OrderNotificationType' ) ) );
+			wp_safe_redirect( remove_query_arg( $clean_args ) );
+			exit;
+		}
+		if ( 'payoneer' === $g ) {
+			$ref = isset( $_GET['reference'] ) ? sanitize_text_field( wp_unslash( $_GET['reference'] ) ) : '';
+			$long_id = isset( $_GET['longId'] ) ? sanitize_text_field( wp_unslash( $_GET['longId'] ) ) : '';
+			if ( $ref && Fundolar_Payments::verify_gateway_return_nonce( 'payoneer', $ref, $rtn ) ) {
+				Fundolar_Payments::payoneer_verify_and_update( $ref, $long_id );
+			}
+			wp_safe_redirect( remove_query_arg( array_merge( $clean_args, array( 'longId' ) ) ) );
 			exit;
 		}
 	}

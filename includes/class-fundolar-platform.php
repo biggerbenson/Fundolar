@@ -348,6 +348,9 @@ class Fundolar_Platform {
 	 * @return void
 	 */
 	public static function ensure_gateways_synced_for_display( $force = false ) {
+		if ( Fundolar_Payments::is_own_keys_mode() ) {
+			return;
+		}
 		self::repair_platform_connection_if_needed();
 
 		if ( ! Fundolar_Payments::is_central_connected() ) {

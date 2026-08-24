@@ -19,12 +19,66 @@ class Fundolar_Payments {
 	const MODE_CENTRAL = 'central';
 
 	/**
+	 * Self-hosted distribution uses Fundolar Central only (no local API key fields).
+	 *
+	 * @return bool
+	 */
+	public static function is_central_only_distribution() {
+		return defined( 'FUNDOLAR_CENTRAL_ONLY' ) && FUNDOLAR_CENTRAL_ONLY;
+	}
+
+	/**
+	 * Create a return nonce for gateway redirect callbacks.
+	 *
+	 * @param string $gateway   Gateway slug.
+	 * @param string $reference Checkout / order reference.
+	 * @return string
+	 */
+	public static function create_gateway_return_nonce( $gateway, $reference ) {
+		return wp_create_nonce( 'fundolar_gw_return_' . sanitize_key( (string) $gateway ) . '_' . sanitize_text_field( (string) $reference ) );
+	}
+
+	/**
+	 * Verify a gateway return nonce.
+	 *
+	 * @param string $gateway   Gateway slug.
+	 * @param string $reference Checkout / order reference.
+	 * @param string $nonce     Nonce from the return URL.
+	 * @return bool
+	 */
+	public static function verify_gateway_return_nonce( $gateway, $reference, $nonce ) {
+		$nonce = sanitize_text_field( (string) $nonce );
+		if ( '' === $nonce || '' === (string) $reference ) {
+			return false;
+		}
+		return (bool) wp_verify_nonce( $nonce, 'fundolar_gw_return_' . sanitize_key( (string) $gateway ) . '_' . sanitize_text_field( (string) $reference ) );
+	}
+
+	/**
+	 * Append fundolar_gateway + fundolar_rtn to a return URL.
+	 *
+	 * @param string $url       Base return URL.
+	 * @param string $gateway   Gateway slug.
+	 * @param string $reference Checkout reference.
+	 * @return string
+	 */
+	public static function with_gateway_return_args( $url, $gateway, $reference ) {
+		return add_query_arg(
+			array(
+				'fundolar_gateway' => sanitize_key( (string) $gateway ),
+				'fundolar_rtn'     => self::create_gateway_return_nonce( $gateway, $reference ),
+			),
+			esc_url_raw( (string) $url )
+		);
+	}
+
+	/**
 	 * Built-in gateway slugs shipped with the plugin.
 	 *
 	 * @return string[]
 	 */
 	public static function builtin_gateway_slugs() {
-		return array( 'stripe', 'paypal', 'mobile_money_ug', 'pesapal', 'flutterwave', 'paystack' );
+		return array( 'stripe', 'payoneer', 'paypal', 'mobile_money_ug', 'pesapal', 'flutterwave', 'paystack' );
 	}
 
 	/**
@@ -58,7 +112,7 @@ class Fundolar_Payments {
 	 * @return string[]
 	 */
 	public static function own_keys_gateways() {
-		return array( 'stripe', 'paypal', 'mobile_money_ug' );
+		return array( 'stripe', 'payoneer', 'paypal', 'mobile_money_ug', 'pesapal', 'flutterwave', 'paystack' );
 	}
 
 	/**
@@ -69,6 +123,7 @@ class Fundolar_Payments {
 	public static function gateway_labels() {
 		return array(
 			'stripe'          => __( 'Stripe', 'fundolar' ),
+			'payoneer'        => __( 'Payoneer Cards', 'fundolar' ),
 			'paypal'          => __( 'PayPal', 'fundolar' ),
 			'mobile_money_ug' => __( 'Mobile Money (UG)', 'fundolar' ),
 			'paystack'        => __( 'Paystack', 'fundolar' ),
@@ -192,14 +247,25 @@ class Fundolar_Payments {
 	 * @return string
 	 */
 	public static function payment_mode() {
-		return self::MODE_CENTRAL;
+		if ( self::is_central_only_distribution() ) {
+			return self::MODE_CENTRAL;
+		}
+		$s    = self::get_settings();
+		$mode = isset( $s['payment_mode'] ) ? sanitize_key( (string) $s['payment_mode'] ) : self::MODE_CENTRAL;
+		if ( ! in_array( $mode, array( self::MODE_OWN_KEYS, self::MODE_CENTRAL ), true ) ) {
+			$mode = self::MODE_CENTRAL;
+		}
+		return $mode;
 	}
 
 	/**
 	 * @return bool
 	 */
 	public static function is_own_keys_mode() {
-		return false;
+		if ( self::is_central_only_distribution() ) {
+			return false;
+		}
+		return self::MODE_OWN_KEYS === self::payment_mode();
 	}
 
 	/**
@@ -243,6 +309,9 @@ class Fundolar_Payments {
 	 * @return string[]
 	 */
 	public static function gateways_for_mode() {
+		if ( self::is_own_keys_mode() ) {
+			return self::own_keys_gateways();
+		}
 		return self::gateways();
 	}
 
@@ -346,8 +415,8 @@ class Fundolar_Payments {
 	 */
 	public static function get_settings() {
 		$defaults = array(
-			'payment_mode'              => self::MODE_CENTRAL,
-			'enabled_gateways'          => array(),
+			'payment_mode'              => self::is_central_only_distribution() ? self::MODE_CENTRAL : self::MODE_OWN_KEYS,
+			'enabled_gateways'          => array( 'stripe' ),
 			'preset_amounts'            => array( 10, 20, 50, 100, 200 ),
 			'default_currency'          => 'USD',
 			'form_layout'               => 'portrait',
@@ -362,6 +431,9 @@ class Fundolar_Payments {
 			'donor_email_template'      => '',
 			'stripe_publishable'        => '',
 			'stripe_secret'             => '',
+			'payoneer_checkout_store_code' => '',
+			'payoneer_checkout_token'   => '',
+			'payoneer_checkout_environment' => 'live',
 			'paypal_client_id'          => '',
 			'paypal_secret'             => '',
 			'pesapal_consumer_key'      => '',
@@ -393,7 +465,9 @@ class Fundolar_Payments {
 			$stored = array();
 		}
 		$merged = wp_parse_args( $stored, $defaults );
-		if ( empty( $stored['payment_mode'] ) && ! empty( $merged['platform_api_key'] ) ) {
+		if ( self::is_central_only_distribution() ) {
+			$merged['payment_mode'] = self::MODE_CENTRAL;
+		} elseif ( empty( $stored['payment_mode'] ) && ! empty( $merged['platform_api_key'] ) ) {
 			$merged['payment_mode'] = self::MODE_CENTRAL;
 		}
 		return $merged;
@@ -416,14 +490,18 @@ class Fundolar_Payments {
 	 * @return string[]
 	 */
 	public static function gateways_ready_for_front() {
-		if ( ! self::is_central_connected() ) {
-			return array();
-		}
 		$s = self::get_settings();
-		if ( isset( $s['platform_payments_enabled'] ) && '1' !== (string) $s['platform_payments_enabled'] ) {
-			return array();
+		if ( self::is_central_mode() ) {
+			if ( ! self::is_central_connected() ) {
+				return array();
+			}
+			if ( isset( $s['platform_payments_enabled'] ) && '1' !== (string) $s['platform_payments_enabled'] ) {
+				return array();
+			}
+			$list = array_values( array_intersect( self::gateways(), (array) $s['enabled_gateways'] ) );
+		} else {
+			$list = array_values( array_intersect( self::gateways_for_mode(), (array) $s['enabled_gateways'] ) );
 		}
-		$list = array_values( array_intersect( self::gateways(), (array) $s['enabled_gateways'] ) );
 		return array_values( array_filter( $list, array( __CLASS__, 'gateway_ready' ) ) );
 	}
 
@@ -485,6 +563,60 @@ class Fundolar_Payments {
 				$out[ $key ] = sanitize_text_field( wp_unslash( $val ) );
 			}
 		}
+		if ( self::is_central_only_distribution() ) {
+			$out['payment_mode'] = self::MODE_CENTRAL;
+		} elseif ( isset( $input['payment_mode'] ) ) {
+			$mode = sanitize_key( wp_unslash( $input['payment_mode'] ) );
+			if ( in_array( $mode, array( self::MODE_OWN_KEYS, self::MODE_CENTRAL ), true ) ) {
+				$out['payment_mode'] = $mode;
+			}
+		}
+		if ( ! self::is_central_only_distribution() && self::MODE_OWN_KEYS === $out['payment_mode'] ) {
+			$cred_map = array(
+				'stripe_publishable'      => 'text',
+				'stripe_secret'           => 'secret',
+				'stripe_webhook_secret'   => 'secret',
+				'payoneer_checkout_store_code' => 'text',
+				'payoneer_checkout_token' => 'secret',
+				'payoneer_checkout_environment' => 'text',
+				'paypal_client_id'        => 'text',
+				'paypal_secret'           => 'secret',
+				'pesapal_consumer_key'    => 'text',
+				'pesapal_consumer_secret' => 'secret',
+				'flutterwave_public'      => 'text',
+				'flutterwave_secret'      => 'secret',
+				'paystack_public'         => 'text',
+				'paystack_secret'         => 'secret',
+				'marzpay_api_key'         => 'text',
+				'marzpay_api_secret'      => 'secret',
+			);
+			foreach ( $cred_map as $key => $type ) {
+				if ( ! array_key_exists( $key, $input ) ) {
+					continue;
+				}
+				$val = $input[ $key ];
+				if ( 'secret' === $type ) {
+					$val = is_string( $val ) ? trim( $val ) : '';
+					if ( '' !== $val ) {
+						$out[ $key ] = Fundolar_Crypto::encrypt( $val );
+					}
+				} else {
+					$out[ $key ] = sanitize_text_field( wp_unslash( $val ) );
+				}
+			}
+			if ( isset( $input['enabled_gateways'] ) && is_array( $input['enabled_gateways'] ) ) {
+				$en = array();
+				foreach ( $input['enabled_gateways'] as $g ) {
+					$g = sanitize_key( $g );
+					if ( in_array( $g, self::own_keys_gateways(), true ) ) {
+						$en[] = $g;
+					}
+				}
+				$out['enabled_gateways'] = array_values( array_unique( $en ) );
+			} elseif ( array_key_exists( 'enabled_gateways', $input ) ) {
+				$out['enabled_gateways'] = array();
+			}
+		}
 		if ( isset( $input['preset_amounts'] ) && is_array( $input['preset_amounts'] ) ) {
 			$amounts = array();
 			foreach ( $input['preset_amounts'] as $a ) {
@@ -499,7 +631,9 @@ class Fundolar_Payments {
 				$out['preset_amounts'] = array_slice( $amounts, 0, 10 );
 			}
 		}
-		$out['payment_mode'] = self::MODE_CENTRAL;
+		if ( ! empty( $input['fundolar_connect_platform'] ) || ! empty( $input['fundolar_sync_platform'] ) ) {
+			$out['payment_mode'] = self::MODE_CENTRAL;
+		}
 		if ( isset( $input['form_layout'] ) ) {
 			$fl = sanitize_key( wp_unslash( $input['form_layout'] ) );
 			if ( array_key_exists( $fl, self::form_layouts() ) ) {
@@ -558,7 +692,7 @@ class Fundolar_Payments {
 	 */
 	public static function get_settings_for_display() {
 		$s = self::get_settings();
-		foreach ( array( 'stripe_secret', 'paypal_secret', 'pesapal_consumer_secret', 'flutterwave_secret', 'paystack_secret', 'marzpay_api_secret', 'stripe_webhook_secret', 'platform_signing_secret' ) as $k ) {
+		foreach ( array( 'stripe_secret', 'payoneer_checkout_token', 'paypal_secret', 'pesapal_consumer_secret', 'flutterwave_secret', 'paystack_secret', 'marzpay_api_secret', 'stripe_webhook_secret', 'platform_signing_secret' ) as $k ) {
 			if ( ! empty( $s[ $k ] ) ) {
 				$s[ $k ] = '********';
 			}
@@ -671,6 +805,7 @@ class Fundolar_Payments {
 		$credentials = isset( $payload['credentials'] ) && is_array( $payload['credentials'] ) ? $payload['credentials'] : array();
 		$gateway_credentials = array(
 			'stripe'          => array( 'stripe_publishable', 'stripe_secret', 'stripe_webhook_secret' ),
+			'payoneer'        => array( 'payoneer_checkout_store_code', 'payoneer_checkout_token', 'payoneer_checkout_environment' ),
 			'paypal'          => array( 'paypal_client_id', 'paypal_secret' ),
 			'paystack'        => array( 'paystack_public', 'paystack_secret' ),
 			'flutterwave'     => array( 'flutterwave_public', 'flutterwave_secret' ),
@@ -687,6 +822,9 @@ class Fundolar_Payments {
 			'stripe_publishable'        => 'stripe_publishable',
 			'stripe_secret'             => 'stripe_secret',
 			'stripe_webhook_secret'     => 'stripe_webhook_secret',
+			'payoneer_checkout_store_code' => 'payoneer_checkout_store_code',
+			'payoneer_checkout_token'   => 'payoneer_checkout_token',
+			'payoneer_checkout_environment' => 'payoneer_checkout_environment',
 			'paypal_client_id'          => 'paypal_client_id',
 			'paypal_secret'             => 'paypal_secret',
 			'paystack_public'           => 'paystack_public',
@@ -753,6 +891,8 @@ class Fundolar_Payments {
 		switch ( $gateway ) {
 			case 'stripe':
 				return '' !== trim( $s['stripe_publishable'] ) && '' !== self::get_credential_secret( 'stripe_secret' );
+			case 'payoneer':
+				return '' !== trim( (string) ( $s['payoneer_checkout_store_code'] ?? '' ) ) && '' !== self::get_credential_secret( 'payoneer_checkout_token' );
 			case 'paypal':
 				return '' !== trim( $s['paypal_client_id'] ) && '' !== self::get_credential_secret( 'paypal_secret' );
 			case 'pesapal':
@@ -942,8 +1082,9 @@ class Fundolar_Payments {
 			return false;
 		}
 
-		self::marzpay_apply_status( (int) $row->id, $parsed['status'], $payload );
-		return true;
+		// Re-verify status with MarzPay API — do not trust the webhook body alone.
+		$res = self::marzpay_sync_transaction( (int) $row->id );
+		return ! is_wp_error( $res );
 	}
 
 	/**
@@ -1014,6 +1155,195 @@ class Fundolar_Payments {
 	}
 
 	/**
+	 * Create a Payoneer Checkout LIST session for card payments.
+	 *
+	 * @param array $payload Payload from REST.
+	 * @return array|WP_Error
+	 */
+	public static function payoneer_create_list( array $payload ) {
+		$s     = self::get_settings();
+		$code  = trim( (string) ( $s['payoneer_checkout_store_code'] ?? '' ) );
+		$token = self::get_credential_secret( 'payoneer_checkout_token' );
+		if ( '' === $code || '' === $token ) {
+			return new WP_Error( 'fundolar_payoneer', __( 'Payoneer Checkout is not configured.', 'fundolar' ) );
+		}
+		$env = strtolower( trim( (string) ( $s['payoneer_checkout_environment'] ?? 'live' ) ) );
+		if ( in_array( $env, array( 'sandbox', 'test' ), true ) ) {
+			$env = 'sandbox';
+		} else {
+			$env = 'live';
+		}
+		$api_base = 'sandbox' === $env ? 'https://api.sandbox.oscato.com' : 'https://api.live.oscato.com';
+		$res_base = 'sandbox' === $env ? 'https://resources.sandbox.oscato.com' : 'https://resources.live.oscato.com';
+
+		$split = Fundolar_Fees::split_for_checkout( (float) $payload['amount'], $payload['currency'] );
+		$tx_id = 'FD-PO-' . strtoupper( wp_generate_password( 12, false, false ) );
+		$name  = sanitize_text_field( (string) ( $payload['name'] ?? 'Donor' ) );
+		$email = sanitize_email( (string) ( $payload['email'] ?? '' ) );
+		$return_url = ! empty( $payload['redirect_url'] ) ? esc_url_raw( (string) $payload['redirect_url'] ) : home_url( '/' );
+		$return_url = self::with_gateway_return_args( $return_url, 'payoneer', $tx_id );
+		$parts = preg_split( '/\s+/', $name );
+		$first = is_array( $parts ) && isset( $parts[0] ) ? substr( (string) $parts[0], 0, 50 ) : 'Donor';
+		$last  = ( is_array( $parts ) && count( $parts ) > 1 ) ? substr( implode( ' ', array_slice( $parts, 1 ) ), 0, 50 ) : 'Guest';
+
+		$body = array(
+			'transactionId' => $tx_id,
+			'country'       => 'US',
+			'customer'      => array_filter(
+				array(
+					'number' => substr( preg_replace( '/[^a-zA-Z0-9_-]/', '', $tx_id ), 0, 32 ),
+					'email'  => is_email( $email ) ? $email : null,
+					'name'   => array(
+						'firstName' => $first ?: 'Donor',
+						'lastName'  => $last ?: 'Guest',
+					),
+				)
+			),
+			'payment'       => array(
+				'amount'    => round( (float) $split['gross'], 2 ),
+				'currency'  => strtoupper( (string) $split['currency'] ),
+				'reference' => sprintf(
+					/* translators: %s: donor name */
+					__( 'Donation from %s', 'fundolar' ),
+					$name
+				),
+			),
+			'style'         => array( 'hostedVersion' => 'v4' ),
+			'callback'      => array(
+				'returnUrl' => $return_url,
+				'cancelUrl' => $return_url,
+			),
+		);
+
+		$response = wp_remote_post(
+			$api_base . '/api/lists',
+			array(
+				'timeout' => 30,
+				'headers' => array(
+					'Authorization' => 'Basic ' . base64_encode( $code . ':' . $token ),
+					'Accept'        => 'application/vnd.optile.payment.enterprise-v1-extensible+json',
+					'Content-Type'  => 'application/vnd.optile.payment.enterprise-v1-extensible+json',
+				),
+				'body'    => wp_json_encode( $body ),
+			)
+		);
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+		$code_http = wp_remote_retrieve_response_code( $response );
+		$json      = json_decode( wp_remote_retrieve_body( $response ), true );
+		if ( $code_http >= 400 || ! is_array( $json ) ) {
+			$msg = isset( $json['resultInfo'] ) ? (string) $json['resultInfo'] : __( 'Payoneer Checkout error.', 'fundolar' );
+			return new WP_Error( 'fundolar_payoneer_api', $msg );
+		}
+		$long_id  = isset( $json['identification']['longId'] ) ? (string) $json['identification']['longId'] : '';
+		$list_url = isset( $json['links']['self'] ) ? (string) $json['links']['self'] : '';
+		if ( '' === $long_id && '' !== $list_url ) {
+			$chunks  = explode( '/', rtrim( $list_url, '/' ) );
+			$long_id = (string) end( $chunks );
+		}
+		if ( '' === $list_url && '' !== $long_id ) {
+			$list_url = $api_base . '/pci/v1/' . rawurlencode( $long_id );
+		}
+		if ( '' === $long_id || '' === $list_url ) {
+			return new WP_Error( 'fundolar_payoneer', __( 'Payoneer did not return a payment session.', 'fundolar' ) );
+		}
+		$hosted = $res_base . '/paymentpage/v4/responsive.html?listUrl=' . rawurlencode( $list_url );
+
+		return array(
+			'transaction_id' => $tx_id,
+			'long_id'        => $long_id,
+			'list_url'       => $list_url,
+			'hosted_url'     => $hosted,
+			'env'            => 'sandbox' === $env ? 'test' : 'live',
+			'split'          => $split,
+		);
+	}
+
+	/**
+	 * Verify a Payoneer LIST was charged.
+	 *
+	 * @param string $long_id Payoneer longId.
+	 * @return bool
+	 */
+	public static function payoneer_list_charged( $long_id ) {
+		$long_id = trim( (string) $long_id );
+		if ( '' === $long_id ) {
+			return false;
+		}
+		$s     = self::get_settings();
+		$code  = trim( (string) ( $s['payoneer_checkout_store_code'] ?? '' ) );
+		$token = self::get_credential_secret( 'payoneer_checkout_token' );
+		if ( '' === $code || '' === $token ) {
+			return false;
+		}
+		$env = strtolower( trim( (string) ( $s['payoneer_checkout_environment'] ?? 'live' ) ) );
+		$api_base = in_array( $env, array( 'sandbox', 'test' ), true )
+			? 'https://api.sandbox.oscato.com'
+			: 'https://api.live.oscato.com';
+		$response = wp_remote_get(
+			$api_base . '/api/lists/' . rawurlencode( $long_id ),
+			array(
+				'timeout' => 20,
+				'headers' => array(
+					'Authorization' => 'Basic ' . base64_encode( $code . ':' . $token ),
+					'Accept'        => 'application/vnd.optile.payment.enterprise-v1-extensible+json',
+				),
+			)
+		);
+		if ( is_wp_error( $response ) ) {
+			return false;
+		}
+		$json = json_decode( wp_remote_retrieve_body( $response ), true );
+		if ( ! is_array( $json ) ) {
+			return false;
+		}
+		$status = strtolower( (string) ( $json['status']['code'] ?? '' ) );
+		if ( in_array( $status, array( 'charged', 'paid', 'authorized' ), true ) ) {
+			return true;
+		}
+		$blob = strtolower( wp_json_encode( $json ) ?: '' );
+		return false !== strpos( $blob, '"code":"charged"' );
+	}
+
+	/**
+	 * Mark local checkout complete after Payoneer return if LIST is charged.
+	 *
+	 * @param string $reference  Our transactionId.
+	 * @param string $long_id    Optional Payoneer longId.
+	 * @return bool
+	 */
+	public static function payoneer_verify_and_update( $reference, $long_id = '' ) {
+		$reference = sanitize_text_field( (string) $reference );
+		$long_id   = sanitize_text_field( (string) $long_id );
+		if ( '' === $reference ) {
+			return false;
+		}
+		global $wpdb;
+		$table = Fundolar_DB::table();
+		$row   = $wpdb->get_row( $wpdb->prepare( "SELECT id, status, meta FROM {$table} WHERE gateway = %s AND gateway_ref = %s LIMIT 1", 'payoneer', $reference ) );
+		if ( ! $row ) {
+			return false;
+		}
+		if ( 'completed' === (string) ( $row->status ?? '' ) ) {
+			return true;
+		}
+		if ( '' === $long_id && ! empty( $row->meta ) ) {
+			$meta = json_decode( (string) $row->meta, true );
+			if ( is_array( $meta ) && ! empty( $meta['long_id'] ) ) {
+				$long_id = (string) $meta['long_id'];
+			}
+		}
+		if ( '' === $long_id || ! self::payoneer_list_charged( $long_id ) ) {
+			return false;
+		}
+		Fundolar_DB::update( (int) $row->id, array( 'status' => 'completed', 'meta' => array( 'payoneer_long_id' => $long_id ) ) );
+		Fundolar_Emails::notify_donation_completed( (int) $row->id );
+		Fundolar_Platform::report_donation_status( (int) $row->id, 'completed', 'payoneer_charged', array( 'long_id' => $long_id ) );
+		return true;
+	}
+
+	/**
 	 * Paystack initialize transaction.
 	 *
 	 * @param array $payload Payload.
@@ -1046,7 +1376,7 @@ class Fundolar_Payments {
 		);
 
 		if ( ! empty( $payload['callback_url'] ) ) {
-			$body['callback_url'] = esc_url_raw( $payload['callback_url'] );
+			$body['callback_url'] = self::with_gateway_return_args( $payload['callback_url'], 'paystack', $reference );
 		}
 
 		$response = wp_remote_post(
@@ -1091,12 +1421,13 @@ class Fundolar_Payments {
 			return new WP_Error( 'fundolar_amount', __( 'Amount is too small for this currency.', 'fundolar' ) );
 		}
 		$tx_ref = 'fundolar_' . wp_generate_password( 14, false, false );
+		$redirect = ! empty( $payload['redirect_url'] ) ? (string) $payload['redirect_url'] : home_url( '/' );
 
 		$body = array(
 			'tx_ref'       => $tx_ref,
 			'amount'       => (string) $split['gross'],
 			'currency'     => strtoupper( $split['currency'] ),
-			'redirect_url' => esc_url_raw( $payload['redirect_url'] ),
+			'redirect_url' => self::with_gateway_return_args( $redirect, 'flutterwave', $tx_ref ),
 			'customer'     => array(
 				'email'       => sanitize_email( $payload['email'] ),
 				'name'        => sanitize_text_field( $payload['name'] ),
@@ -1295,7 +1626,6 @@ class Fundolar_Payments {
 		}
 
 		$return_url = ! empty( $payload['redirect_url'] ) ? esc_url_raw( (string) $payload['redirect_url'] ) : home_url( '/' );
-		$return_url = add_query_arg( 'fundolar_gateway', 'pesapal', $return_url );
 		$ipn_url    = add_query_arg( 'fundolar_gateway', 'pesapal', home_url( '/' ) );
 		$ipn_id     = self::pesapal_register_ipn( $token, $api_base, $ipn_url );
 		if ( is_wp_error( $ipn_id ) ) {
@@ -1303,6 +1633,7 @@ class Fundolar_Payments {
 		}
 
 		$order_reference = 'fundolar_' . wp_generate_password( 14, false, false );
+		$return_url      = self::with_gateway_return_args( $return_url, 'pesapal', $order_reference );
 		$customer_name   = trim( sanitize_text_field( (string) $payload['name'] ) );
 		$parts           = preg_split( '/\s+/', $customer_name );
 		$first_name      = isset( $parts[0] ) ? $parts[0] : 'Donor';

@@ -760,7 +760,7 @@
 }
 
 /* ------------------------------------------------------------------------- */
-/* Dashboard admin notices (rebrand + Central onboarding) */
+/* Dashboard admin notices (welcome + Central onboarding) */
 /* ------------------------------------------------------------------------- */
 
 .fundolar-admin-notice {
@@ -768,6 +768,7 @@
 	padding: 0;
 }
 
+.fundolar-admin-notice--welcome,
 .fundolar-admin-notice--rebrand {
 	border-left-color: #2b88b1;
 	background: #f6fafc;
@@ -798,6 +799,7 @@
 	margin-top: 2px;
 }
 
+.fundolar-admin-notice--welcome .fundolar-admin-notice__icon,
 .fundolar-admin-notice--rebrand .fundolar-admin-notice__icon {
 	background: rgba(43, 136, 177, 0.12);
 	color: #2b88b1;
@@ -827,6 +829,20 @@
 	color: #50575e;
 	line-height: 1.5;
 	max-width: 52rem;
+}
+
+.fundolar-admin-notice__list {
+	margin: 8px 0 0 1.15em;
+	padding: 0;
+	font-size: 13px;
+	color: #50575e;
+	line-height: 1.5;
+	max-width: 52rem;
+	list-style: disc;
+}
+
+.fundolar-admin-notice__list li {
+	margin: 0.25em 0;
 }
 
 .fundolar-admin-notice__actions {

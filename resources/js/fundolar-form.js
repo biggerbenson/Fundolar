@@ -157,6 +157,8 @@
 		var form = $('#fundolar-donate-form', root);
 		var msgEl = $('#fundolar-message', root);
 		var cardWrap = $('#fundolar-card-element', root);
+		var payoneerWrap = $('#fundolar-payoneer-wrap', root);
+		var payoneerCards = $('#fundolar-payoneer-card-element', root);
 		var paypalWrap = $('#fundolar-paypal-container', root);
 		var mobileWrap = $('#fundolar-mobile-money-wrap', root);
 		var mobilePhone = $('#fundolar-mobile-phone', root);
@@ -164,6 +166,8 @@
 		var stripeInstance = null;
 		var cardElement = null;
 		var paypalRendered = false;
+		var payoneerCheckout = null;
+		var payoneerSession = null;
 
 		if (!form) {
 			return;
@@ -649,6 +653,75 @@
 			cardWrap.innerHTML = '';
 		}
 
+		function destroyPayoneerUi() {
+			payoneerCheckout = null;
+			payoneerSession = null;
+			if (payoneerCards) {
+				payoneerCards.innerHTML = '';
+			}
+		}
+
+		function loadPayoneerSdk() {
+			if (window.CheckoutWeb) {
+				return Promise.resolve(window.CheckoutWeb);
+			}
+			return import('https://esm.sh/@payoneer/checkout-web@1.29.0')
+				.then(function (mod) {
+					var cw = (mod && (mod.CheckoutWeb || (mod.default && mod.default.CheckoutWeb))) || null;
+					if (!cw) {
+						throw new Error('payoneer_sdk_missing');
+					}
+					window.CheckoutWeb = cw;
+					return cw;
+				});
+		}
+
+		function mountPayoneerCards(session) {
+			if (!payoneerWrap || !payoneerCards) {
+				return Promise.reject(new Error(cfg.i18n.error));
+			}
+			payoneerWrap.hidden = false;
+			payoneerCards.innerHTML = '';
+			payoneerSession = session;
+			return loadPayoneerSdk()
+				.then(function (CheckoutWeb) {
+					return CheckoutWeb({
+						env: session.env || 'live',
+						longId: session.long_id,
+						onPaymentSuccess: function () {
+							apiPost('payoneer/verify', {
+								reference: session.reference || '',
+								long_id: session.long_id || '',
+							})
+								.then(function () {
+									setMsg(cfg.i18n.success, 'is-success');
+								})
+								.catch(function () {
+									setMsg(cfg.i18n.success, 'is-success');
+								})
+								.finally(function () {
+									submitBtn.disabled = false;
+									submitBtn.hidden = false;
+								});
+						},
+						onPaymentFailure: function () {
+							setMsg(cfg.i18n.error, 'is-error');
+							submitBtn.disabled = false;
+							submitBtn.hidden = false;
+						},
+					});
+				})
+				.then(function (checkout) {
+					payoneerCheckout = checkout;
+					if (checkout && typeof checkout.dropIn === 'function') {
+						checkout.dropIn('cards').mount(payoneerCards);
+						submitBtn.hidden = true;
+						return;
+					}
+					throw new Error('payoneer_dropin_missing');
+				});
+		}
+
 		function ensurePaypal() {
 			var cid = cfg.paypalClient && String(cfg.paypalClient).trim();
 			if (!cid) {
@@ -727,13 +800,16 @@
 				.render('#fundolar-paypal-container');
 		}
 
-		function pollMarzpayStatus(transactionId, attempt) {
+		function pollMarzpayStatus(transactionId, reference, attempt) {
 			var maxAttempts = 60;
 			var delayMs = 3000;
 			if (attempt >= maxAttempts) {
 				throw new Error(cfg.i18n.mobileMoneyFailed || cfg.i18n.error);
 			}
-			return apiPost('marzpay/status', { transaction_id: transactionId }).then(function (data) {
+			return apiPost('marzpay/status', {
+				transaction_id: transactionId,
+				reference: reference,
+			}).then(function (data) {
 				if (data && data.completed) {
 					return data;
 				}
@@ -742,7 +818,7 @@
 				}
 				return new Promise(function (resolve, reject) {
 					setTimeout(function () {
-						pollMarzpayStatus(transactionId, attempt + 1).then(resolve).catch(reject);
+						pollMarzpayStatus(transactionId, reference, attempt + 1).then(resolve).catch(reject);
 					}, delayMs);
 				});
 			});
@@ -752,10 +828,14 @@
 			refreshGatewayAvailabilityByCurrency();
 			var g = selectedGateway();
 			destroyStripeUi();
+			destroyPayoneerUi();
 			paypalWrap.innerHTML = '';
 			paypalWrap.hidden = true;
 			if (mobileWrap) {
 				mobileWrap.hidden = g !== 'mobile_money_ug';
+			}
+			if (payoneerWrap) {
+				payoneerWrap.hidden = g !== 'payoneer';
 			}
 			submitBtn.hidden = false;
 			paypalRendered = false;
@@ -898,6 +978,35 @@
 				return;
 			}
 
+			if (g === 'payoneer') {
+				submitBtn.disabled = true;
+				apiPost('init-payment', {
+					gateway: 'payoneer',
+					name: name,
+					email: email,
+					amount: amount,
+					currency: currency,
+					return_url: getReturnUrl(),
+				})
+					.then(function (data) {
+						if (!data || !data.long_id) {
+							throw new Error(cfg.i18n.error);
+						}
+						return mountPayoneerCards(data).catch(function () {
+							if (data.hosted_url) {
+								window.location.href = data.hosted_url;
+								return;
+							}
+							throw new Error(cfg.i18n.error);
+						});
+					})
+					.catch(function (err) {
+						setMsg(err.message || cfg.i18n.error, 'is-error');
+						submitBtn.disabled = false;
+					});
+				return;
+			}
+
 			if (g === 'paystack' || g === 'flutterwave') {
 				if (!gatewayAllowsCurrency(g, currency)) {
 					setMsg(cfg.i18n.error, 'is-error');
@@ -975,11 +1084,11 @@
 					return_url: getReturnUrl(),
 				})
 					.then(function (data) {
-						if (!data || !data.transaction_id) {
+						if (!data || !data.transaction_id || !data.marzpay_uuid) {
 							throw new Error(cfg.i18n.error);
 						}
 						setMsg(cfg.i18n.mobileMoneyPending || cfg.i18n.loading, '');
-						return pollMarzpayStatus(data.transaction_id, 0);
+						return pollMarzpayStatus(data.transaction_id, data.marzpay_uuid, 0);
 					})
 					.then(function () {
 						setMsg(cfg.i18n.success, 'is-success');

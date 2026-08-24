@@ -87,6 +87,8 @@ class Fundolar_Migration {
 				}
 			}
 			update_option( self::DB_VERSION_OPTION, $target_version, false );
+			// Queue dashboard welcome so admins see it after install or update.
+			update_option( 'fundolar_welcome_notice_version', $target_version, false );
 		}
 	}
 
@@ -377,6 +379,10 @@ class Fundolar_Migration {
 	 */
 	public static function register_bootstrap_hooks() {
 		add_filter( 'all_plugins', array( __CLASS__, 'filter_all_plugins' ), 20 );
+		// WordPress.org: do not activate/deactivate other plugins or rewrite active_plugins.
+		if ( defined( 'FUNDOLAR_WPORG' ) && FUNDOLAR_WPORG ) {
+			return;
+		}
 		add_action( 'activated_plugin', array( __CLASS__, 'on_plugin_activated' ), 10, 2 );
 		add_action( 'admin_init', array( __CLASS__, 'maybe_cleanup_shadow_bootstraps' ), 1 );
 		add_action( 'upgrader_process_complete', array( __CLASS__, 'on_upgrader_complete' ), 10, 2 );
@@ -397,10 +403,7 @@ class Fundolar_Migration {
 	 * @return string Plugin basename, e.g. fundolar/fundolar.php.
 	 */
 	public static function canonical_bootstrap_basename() {
-		$folder = self::plugin_folder_slug();
-		$file   = ( 'fundora' === $folder ) ? 'fundora.php' : 'fundolar.php';
-
-		return $folder . '/' . $file;
+		return self::plugin_folder_slug() . '/fundolar.php';
 	}
 
 	/**
@@ -409,25 +412,20 @@ class Fundolar_Migration {
 	 * @return string[]
 	 */
 	public static function shadow_bootstrap_basenames() {
-		$folder    = self::plugin_folder_slug();
-		$canonical = self::canonical_bootstrap_basename();
-		$candidates = array(
-			$folder . '/fundolar.php',
-			$folder . '/fundora.php',
-		);
-
-		return array_values(
-			array_filter(
-				$candidates,
-				static function ( $basename ) use ( $canonical ) {
-					return $basename !== $canonical;
-				}
-			)
-		);
+		$folder = self::plugin_folder_slug();
+		$shadows = array( $folder . '/fundora.php' );
+		// Also clean common leftover paths from failed updates / rebrand.
+		$shadows[] = 'fundora/fundora.php';
+		$shadows[] = 'fundora/fundolar.php';
+		if ( 'fundolar' !== $folder ) {
+			$shadows[] = 'fundolar/fundora.php';
+		}
+		return array_values( array_unique( $shadows ) );
 	}
 
 	/**
-	 * Hide duplicate bootstrap entries from the Plugins list.
+	 * Hide duplicate Fundolar / Fundora bootstrap entries from the Plugins list.
+	 * Keeps a single canonical row: {folder}/fundolar.php (prefers fundolar/fundolar.php).
 	 *
 	 * @param array<string,array<string,mixed>> $plugins All plugins.
 	 * @return array<string,array<string,mixed>>
@@ -436,8 +434,59 @@ class Fundolar_Migration {
 		if ( ! is_array( $plugins ) ) {
 			return $plugins;
 		}
-		foreach ( self::shadow_bootstrap_basenames() as $shadow ) {
-			unset( $plugins[ $shadow ] );
+
+		$canonical = self::canonical_bootstrap_basename();
+		$keep      = null;
+		$remove    = array();
+
+		foreach ( $plugins as $basename => $data ) {
+			$basename = (string) $basename;
+			$name     = isset( $data['Name'] ) ? (string) $data['Name'] : '';
+			$domain   = isset( $data['TextDomain'] ) ? (string) $data['TextDomain'] : '';
+			$file     = strtolower( basename( $basename ) );
+			$is_ours  = in_array( $file, array( 'fundolar.php', 'fundora.php' ), true )
+				|| in_array( strtolower( $domain ), array( 'fundolar', 'fundora' ), true )
+				|| in_array( strtolower( $name ), array( 'fundolar', 'fundora' ), true );
+
+			if ( ! $is_ours ) {
+				continue;
+			}
+
+			if ( $basename === $canonical || ( null === $keep && 'fundolar.php' === $file ) ) {
+				if ( null === $keep ) {
+					$keep = $basename;
+				} elseif ( $basename !== $keep ) {
+					$remove[] = $basename;
+				}
+				continue;
+			}
+
+			$remove[] = $basename;
+		}
+
+		// Prefer fundolar/fundolar.php when several folders exist.
+		if ( isset( $plugins['fundolar/fundolar.php'] ) ) {
+			$keep = 'fundolar/fundolar.php';
+		} elseif ( null === $keep ) {
+			foreach ( array_keys( $plugins ) as $basename ) {
+				if ( 'fundolar.php' === strtolower( basename( (string) $basename ) ) ) {
+					$keep = (string) $basename;
+					break;
+				}
+			}
+		}
+
+		foreach ( $plugins as $basename => $data ) {
+			$basename = (string) $basename;
+			$file     = strtolower( basename( $basename ) );
+			$name     = isset( $data['Name'] ) ? strtolower( (string) $data['Name'] ) : '';
+			$domain   = isset( $data['TextDomain'] ) ? strtolower( (string) $data['TextDomain'] ) : '';
+			$is_ours  = in_array( $file, array( 'fundolar.php', 'fundora.php' ), true )
+				|| in_array( $domain, array( 'fundolar', 'fundora' ), true )
+				|| in_array( $name, array( 'fundolar', 'fundora' ), true );
+			if ( $is_ours && $basename !== $keep ) {
+				unset( $plugins[ $basename ] );
+			}
 		}
 
 		return $plugins;
@@ -456,6 +505,7 @@ class Fundolar_Migration {
 		if ( ! in_array( $plugin, array_merge( array( $canonical ), $shadows ), true ) ) {
 			return;
 		}
+		self::ensure_canonical_plugin_active();
 		self::deactivate_shadow_bootstraps();
 		self::remove_shadow_bootstrap_files();
 	}
@@ -485,6 +535,7 @@ class Fundolar_Migration {
 				return;
 			}
 		}
+		self::ensure_canonical_plugin_active();
 		self::deactivate_shadow_bootstraps();
 		self::remove_shadow_bootstrap_files();
 	}
@@ -493,8 +544,84 @@ class Fundolar_Migration {
 	 * Remove shadow bootstrap files on admin load (idempotent).
 	 */
 	public static function maybe_cleanup_shadow_bootstraps() {
+		self::ensure_canonical_plugin_active();
+		self::ensure_canonical_plugin_active();
 		self::deactivate_shadow_bootstraps();
 		self::remove_shadow_bootstrap_files();
+	}
+
+	/**
+	 * Ensure the active plugin path points at a single fundolar.php bootstrap.
+	 */
+	public static function ensure_canonical_plugin_active() {
+		$preferred = 'fundolar/fundolar.php';
+		$active    = (array) get_option( 'active_plugins', array() );
+		$ours      = array();
+		foreach ( $active as $basename ) {
+			$file = strtolower( basename( (string) $basename ) );
+			if ( in_array( $file, array( 'fundolar.php', 'fundora.php' ), true ) ) {
+				$ours[] = (string) $basename;
+			}
+		}
+		if ( empty( $ours ) ) {
+			return;
+		}
+
+		$keep = in_array( $preferred, $ours, true ) ? $preferred : null;
+		if ( null === $keep ) {
+			foreach ( $ours as $basename ) {
+				if ( 'fundolar.php' === strtolower( basename( $basename ) ) ) {
+					$keep = $basename;
+					break;
+				}
+			}
+		}
+		if ( null === $keep ) {
+			$keep = self::canonical_bootstrap_basename();
+		}
+
+		$changed = false;
+		$new     = array();
+		foreach ( $active as $basename ) {
+			$basename = (string) $basename;
+			$file     = strtolower( basename( $basename ) );
+			if ( in_array( $file, array( 'fundolar.php', 'fundora.php' ), true ) ) {
+				if ( $basename === $keep ) {
+					$new[] = $basename;
+				} else {
+					$changed = true;
+				}
+				continue;
+			}
+			$new[] = $basename;
+		}
+		if ( ! in_array( $keep, $new, true ) ) {
+			$new[]   = $keep;
+			$changed = true;
+		}
+		if ( $changed ) {
+			update_option( 'active_plugins', array_values( array_unique( $new ) ) );
+		}
+
+		if ( is_multisite() ) {
+			$network = (array) get_site_option( 'active_sitewide_plugins', array() );
+			$net_changed = false;
+			$keep_time   = isset( $network[ $keep ] ) ? $network[ $keep ] : time();
+			foreach ( array_keys( $network ) as $basename ) {
+				$file = strtolower( basename( (string) $basename ) );
+				if ( in_array( $file, array( 'fundolar.php', 'fundora.php' ), true ) && $basename !== $keep ) {
+					unset( $network[ $basename ] );
+					$net_changed = true;
+				}
+			}
+			if ( ! isset( $network[ $keep ] ) ) {
+				$network[ $keep ] = $keep_time;
+				$net_changed      = true;
+			}
+			if ( $net_changed ) {
+				update_site_option( 'active_sitewide_plugins', $network );
+			}
+		}
 	}
 
 	/**
@@ -527,14 +654,20 @@ class Fundolar_Migration {
 
 	/**
 	 * Delete secondary bootstrap PHP files so WordPress cannot list them twice.
+	 * Paths are resolved from FUNDOLAR_PLUGIN_FILE / FUNDOLAR_PLUGIN_DIR (plugin_dir_path).
 	 */
 	public static function remove_shadow_bootstrap_files() {
-		if ( ! defined( 'FUNDOLAR_PLUGIN_DIR' ) ) {
-			return;
+		$paths = array();
+		if ( defined( 'FUNDOLAR_PLUGIN_DIR' ) ) {
+			$paths[] = trailingslashit( FUNDOLAR_PLUGIN_DIR ) . 'fundora.php';
+			$plugins_root = dirname( untrailingslashit( FUNDOLAR_PLUGIN_DIR ) );
+			$paths[]      = trailingslashit( $plugins_root ) . 'fundora/fundora.php';
+			$paths[]      = trailingslashit( $plugins_root ) . 'fundolar/fundora.php';
+		} elseif ( defined( 'FUNDOLAR_PLUGIN_FILE' ) ) {
+			$paths[] = trailingslashit( plugin_dir_path( FUNDOLAR_PLUGIN_FILE ) ) . 'fundora.php';
 		}
-		$dir = trailingslashit( FUNDOLAR_PLUGIN_DIR );
-		foreach ( self::shadow_bootstrap_basenames() as $shadow ) {
-			$file = $dir . basename( $shadow );
+
+		foreach ( array_unique( $paths ) as $file ) {
 			if ( ! is_file( $file ) ) {
 				continue;
 			}

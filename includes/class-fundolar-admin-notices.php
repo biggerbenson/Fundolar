@@ -1,6 +1,6 @@
 <?php
 /**
- * wp-admin dashboard notices (rebrand + Central onboarding).
+ * wp-admin dashboard notices (post-update welcome + Central onboarding).
  *
  * @package Fundolar
  */
@@ -80,14 +80,13 @@ class Fundolar_Admin_Notices {
 
 		self::render_sync_success_notice();
 
-		$screen     = function_exists( 'get_current_screen' ) ? get_current_screen() : null;
-		$screen_id  = $screen ? (string) $screen->id : '';
-		$dashboard  = ( 'dashboard' === $screen_id );
-		$fundolar   = ( '' !== $screen_id && false !== strpos( $screen_id, 'fundolar' ) );
-		$connected  = self::is_connected_to_central();
+		$screen    = function_exists( 'get_current_screen' ) ? get_current_screen() : null;
+		$screen_id = $screen ? (string) $screen->id : '';
+		$dashboard = ( 'dashboard' === $screen_id );
+		$fundolar  = ( '' !== $screen_id && false !== strpos( $screen_id, 'fundolar' ) );
 
-		if ( $dashboard && self::should_show_rebrand_notice() ) {
-			self::render_rebrand_notice();
+		if ( $dashboard && self::should_show_welcome_notice() ) {
+			self::render_welcome_notice();
 			return;
 		}
 
@@ -100,15 +99,25 @@ class Fundolar_Admin_Notices {
 	 * @return bool
 	 */
 	public static function should_show_central_upsell() {
-		if ( self::should_show_rebrand_notice() ) {
+		if ( self::should_show_welcome_notice() ) {
+			return false;
+		}
+		if ( Fundolar_Payments::is_central_only_distribution() ) {
+			if ( Fundolar_Payments::is_central_connected() && count( Fundolar_Payments::gateways_ready_for_front() ) > 0 ) {
+				return false;
+			}
+		} elseif ( Fundolar_Payments::is_own_keys_mode() && count( Fundolar_Payments::gateways_ready_for_front() ) > 0 ) {
 			return false;
 		}
 		$dismissed = get_user_meta( get_current_user_id(), 'fundolar_dismiss_connect_notice', true );
 		if ( $dismissed && ( time() - (int) $dismissed ) < ( DAY_IN_SECONDS * self::CONNECT_DISMISS_DAYS ) ) {
 			return false;
 		}
-		if ( ! Fundolar_Payments::is_central_connected() ) {
-			return true;
+		if ( Fundolar_Payments::is_central_mode() ) {
+			if ( ! Fundolar_Payments::is_central_connected() ) {
+				return true;
+			}
+			return count( Fundolar_Payments::gateways_ready_for_front() ) === 0;
 		}
 		return count( Fundolar_Payments::gateways_ready_for_front() ) === 0;
 	}
@@ -130,13 +139,47 @@ class Fundolar_Admin_Notices {
 	}
 
 	/**
+	 * Version string for the pending post-update welcome notice.
+	 *
+	 * @return string
+	 */
+	public static function welcome_notice_version() {
+		$version = (string) get_option( 'fundolar_welcome_notice_version', '' );
+		if ( '' !== $version ) {
+			return $version;
+		}
+		// Back-compat: former Fundora installs that migrated before the welcome option existed.
+		if ( Fundolar_Migration::migrated_from_fundora()
+			&& ! get_user_meta( get_current_user_id(), 'fundolar_dismiss_rebrand_notice', true )
+			&& ! get_user_meta( get_current_user_id(), 'fundolar_dismiss_welcome_notice', true ) ) {
+			return defined( 'FUNDOLAR_VERSION' ) ? FUNDOLAR_VERSION : '';
+		}
+		return '';
+	}
+
+	/**
+	 * Dismissable dashboard welcome after install or update.
+	 *
+	 * @return bool
+	 */
+	public static function should_show_welcome_notice() {
+		$version = self::welcome_notice_version();
+		if ( '' === $version ) {
+			return false;
+		}
+		$dismissed = (string) get_user_meta( get_current_user_id(), 'fundolar_dismiss_welcome_notice', true );
+		if ( $dismissed === $version ) {
+			return false;
+		}
+		return true;
+	}
+
+	/**
+	 * @deprecated Use should_show_welcome_notice().
 	 * @return bool
 	 */
 	public static function should_show_rebrand_notice() {
-		if ( ! Fundolar_Migration::migrated_from_fundora() ) {
-			return false;
-		}
-		return ! get_user_meta( get_current_user_id(), 'fundolar_dismiss_rebrand_notice', true );
+		return self::should_show_welcome_notice() && Fundolar_Migration::migrated_from_fundora();
 	}
 
 	/**
@@ -167,28 +210,62 @@ class Fundolar_Admin_Notices {
 	}
 
 	/**
-	 * Rebrand welcome for former Fundora users (dashboard only).
+	 * Post-update / post-install welcome (dashboard only).
 	 */
-	private static function render_rebrand_notice() {
+	private static function render_welcome_notice() {
+		$version      = self::welcome_notice_version();
 		$settings_url = admin_url( 'admin.php?page=fundolar-settings' );
+		$from_fundora = Fundolar_Migration::migrated_from_fundora();
 		?>
-		<div class="notice fundolar-admin-notice fundolar-admin-notice--rebrand is-dismissible" data-fundolar-dismiss="rebrand">
+		<div class="notice fundolar-admin-notice fundolar-admin-notice--welcome is-dismissible" data-fundolar-dismiss="welcome">
 			<div class="fundolar-admin-notice__inner">
-				<span class="fundolar-admin-notice__icon dashicons dashicons-heart" aria-hidden="true"></span>
+				<span class="fundolar-admin-notice__icon dashicons dashicons-yes-alt" aria-hidden="true"></span>
 				<div class="fundolar-admin-notice__body">
-					<p class="fundolar-admin-notice__title"><?php esc_html_e( 'Welcome to Fundolar', 'fundolar' ); ?></p>
-					<p class="fundolar-admin-notice__text">
-						<?php esc_html_e( 'We have rebranded from Fundora. Your donation forms, settings, and transaction history were preserved automatically — no action needed on your part.', 'fundolar' ); ?>
+					<p class="fundolar-admin-notice__title">
+						<?php
+						printf(
+							/* translators: %s: plugin version number */
+							esc_html__( 'Welcome to Fundolar (%s)', 'fundolar' ),
+							esc_html( $version )
+						);
+						?>
 					</p>
+					<p class="fundolar-admin-notice__text">
+						<?php if ( $from_fundora ) : ?>
+							<?php esc_html_e( 'Your site was updated from Fundora to the latest Fundolar. Donation forms, settings, and transaction history were preserved automatically.', 'fundolar' ); ?>
+						<?php else : ?>
+							<?php esc_html_e( 'Fundolar is up to date on this site. Take a moment to review your payment and form settings so donations keep working smoothly.', 'fundolar' ); ?>
+						<?php endif; ?>
+					</p>
+					<ul class="fundolar-admin-notice__list">
+						<?php if ( $from_fundora ) : ?>
+							<li><?php esc_html_e( 'Shortcodes and gateway return URLs continue to work without changes.', 'fundolar' ); ?></li>
+							<li><?php esc_html_e( 'Connect Fundolar Central under Settings → Payments and sync your payment methods.', 'fundolar' ); ?></li>
+						<?php else : ?>
+							<li><?php esc_html_e( 'Connect Fundolar Central and sync payment methods under Settings → Payments.', 'fundolar' ); ?></li>
+							<li><?php esc_html_e( 'Review preset amounts, emails, and form options if you customize them.', 'fundolar' ); ?></li>
+							<li><?php esc_html_e( 'Use the How-to guide anytime for setup and troubleshooting steps.', 'fundolar' ); ?></li>
+						<?php endif; ?>
+					</ul>
 					<p class="fundolar-admin-notice__actions">
-						<a href="<?php echo esc_url( $settings_url ); ?>" class="button button-secondary">
-							<?php esc_html_e( 'View Fundolar settings', 'fundolar' ); ?>
+						<a href="<?php echo esc_url( $settings_url ); ?>" class="button button-primary">
+							<?php esc_html_e( 'Update settings', 'fundolar' ); ?>
+						</a>
+						<a href="<?php echo esc_url( admin_url( 'admin.php?page=fundolar-how-to' ) ); ?>" class="fundolar-admin-notice__link">
+							<?php esc_html_e( 'Setup guide', 'fundolar' ); ?>
 						</a>
 					</p>
 				</div>
 			</div>
 		</div>
 		<?php
+	}
+
+	/**
+	 * @deprecated Use render_welcome_notice().
+	 */
+	private static function render_rebrand_notice() {
+		self::render_welcome_notice();
 	}
 
 	/**
@@ -203,12 +280,12 @@ class Fundolar_Admin_Notices {
 			<div class="fundolar-admin-notice__inner">
 				<span class="fundolar-admin-notice__icon dashicons dashicons-admin-plugins" aria-hidden="true"></span>
 				<div class="fundolar-admin-notice__body">
-					<p class="fundolar-admin-notice__title"><?php esc_html_e( 'Connect Fundolar Central', 'fundolar' ); ?></p>
+					<p class="fundolar-admin-notice__title"><?php esc_html_e( 'Finish payment setup', 'fundolar' ); ?></p>
 					<p class="fundolar-admin-notice__text">
 						<?php if ( Fundolar_Payments::is_central_connected() ) : ?>
-							<?php esc_html_e( 'This site is connected but no payment methods are active yet. Enable gateways in Fundolar Central admin, then click Sync gateways under Settings → Payments.', 'fundolar' ); ?>
+							<?php esc_html_e( 'This site is connected to Fundolar Central but no payment methods are active yet. Enable gateways in your Fundolar dashboard, then click Sync gateways under Settings → Payments.', 'fundolar' ); ?>
 						<?php else : ?>
-							<?php esc_html_e( 'Payment methods are configured in Fundolar Central. Connect your site with a site key and sync to show Stripe, PayPal, Mobile Money (UG), and more on your donation form.', 'fundolar' ); ?>
+							<?php esc_html_e( 'Connect Fundolar Central with your site key under Settings → Payments, then sync gateways to start accepting donations.', 'fundolar' ); ?>
 						<?php endif; ?>
 					</p>
 					<p class="fundolar-admin-notice__actions">
@@ -236,7 +313,7 @@ class Fundolar_Admin_Notices {
 	}
 
 	/**
-	 * Dismiss rebrand or connect notice via AJAX.
+	 * Dismiss welcome or connect notice via AJAX.
 	 */
 	public static function ajax_dismiss() {
 		check_ajax_referer( 'fundolar_support', 'nonce' );
@@ -244,7 +321,12 @@ class Fundolar_Admin_Notices {
 			wp_send_json_error();
 		}
 		$type = isset( $_POST['notice_type'] ) ? sanitize_key( wp_unslash( $_POST['notice_type'] ) ) : '';
-		if ( 'rebrand' === $type ) {
+		if ( 'welcome' === $type || 'rebrand' === $type ) {
+			$version = self::welcome_notice_version();
+			if ( '' === $version ) {
+				$version = defined( 'FUNDOLAR_VERSION' ) ? FUNDOLAR_VERSION : '1';
+			}
+			update_user_meta( get_current_user_id(), 'fundolar_dismiss_welcome_notice', $version );
 			update_user_meta( get_current_user_id(), 'fundolar_dismiss_rebrand_notice', 1 );
 			wp_send_json_success();
 		}

@@ -1,6 +1,44 @@
 Fundolar Plugin Changelog
 ========================
 
+Version 1.4.0 - 2026-08-24
+--------------------------
+- Fundolar.com distribution: Central-only payments — removed own API key fields from Settings → Payments.
+- Professional admin copy: how-to guide, notices, and form messages updated for Fundolar Central setup.
+- Version 1.4.0 release for fundolar.com auto-updates.
+
+Version 1.3.17 - 2026-07-20
+--------------------------
+- Single Plugins-screen entry: hide/remove duplicate Fundora/Fundolar bootstraps
+- Removed UTF-8 BOM (fixes "3 characters of unexpected output")
+- Release tooling moved to fundolar-release/ (not inside the plugin folder)
+
+Version 1.3.16 - 2026-07-20
+--------------------------
+- Clean release ZIP with Unix path separators (fixes "package does not contain Fundolar" / empty plugin)
+- Removed legacy fundora.php bootstrap; installs migrate to fundolar.php automatically
+- Removed stray archives from the plugin folder
+
+Version 1.3.15 - 2026-07-20
+--------------------------
+- Plugins screen: removed the **View details** link
+
+Version 1.3.14 - 2026-07-20
+--------------------------
+- Plugins screen: **Check for updates** runs via AJAX and reports latest version or a newer release
+
+Version 1.3.13 - 2026-07-20
+--------------------------
+- Automatic updates listen to https://fundolar.com/plugin/fundolar.zip
+- Version discovery via info.json (preferred) or version.txt beside the ZIP
+- Removed GitHub API updater; Plugins row still has Check for updates
+
+Version 1.3.12 - 2026-06-21
+--------------------------
+- WordPress.org compliance: restore **Your payment API keys** in Settings → Payments (all built-in gateways).
+- Payment mode selector — donations work with local keys only; Fundolar Central is optional but recommended.
+- Updated readme, how-to guide, form messages, and admin notices.
+
 Version 1.3.11 - 2026-06-10
 --------------------------
 - Plugins screen: **Check for updates** link beside Visit plugin site to pull GitHub immediately.

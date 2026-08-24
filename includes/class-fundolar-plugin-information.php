@@ -16,8 +16,11 @@ class Fundolar_Plugin_Information {
 	 * Register hooks.
 	 */
 	public static function init() {
+		// WordPress.org hosts plugin details; do not intercept plugins_api.
+		if ( defined( 'FUNDOLAR_WPORG' ) && FUNDOLAR_WPORG ) {
+			return;
+		}
 		add_filter( 'plugins_api', array( __CLASS__, 'filter_plugins_api' ), 20, 3 );
-		add_filter( 'plugin_row_meta', array( __CLASS__, 'filter_plugin_row_meta' ), 10, 2 );
 	}
 
 	/**
@@ -49,44 +52,24 @@ class Fundolar_Plugin_Information {
 	}
 
 	/**
-	 * Add "View details" link like repository plugins.
+	 * Formerly added a "View details" row link; removed from the Plugins screen.
 	 *
 	 * @param string[] $links Row meta.
 	 * @param string   $file  Plugin basename.
 	 * @return string[]
 	 */
 	public static function filter_plugin_row_meta( $links, $file ) {
-		if ( plugin_basename( FUNDOLAR_PLUGIN_FILE ) !== $file ) {
-			return $links;
-		}
-		$slug = self::get_slug();
-		$url  = self_admin_url(
-			'plugin-install.php?tab=plugin-information&plugin=' . rawurlencode( $slug ) . '&TB_iframe=true&width=772&height=900'
-		);
-		/* translators: Hidden accessibility text for plugin details link */
-		$label = __( 'More information about Fundolar', 'fundolar' );
-		$title = __( 'Fundolar', 'fundolar' );
-		$html  = sprintf(
-			'<a href="%s" class="thickbox open-plugin-details-modal" aria-label="%s" data-title="%s">%s</a>',
-			esc_url( $url ),
-			esc_attr( $label ),
-			esc_attr( $title ),
-			esc_html__( 'View details', 'fundolar' )
-		);
-		array_unshift( $links, $html );
+		unset( $file );
 		return $links;
 	}
 
 	/**
-	 * Enqueue thickbox on Plugins screen so the details modal works.
+	 * Thickbox is no longer needed on plugins.php (View details removed).
 	 *
-	 * @param string $hook_suffix Current admin page hook.
+	 * @param string $hook_suffix Admin hook.
 	 */
 	public static function enqueue_thickbox_on_plugins_screen( $hook_suffix ) {
-		if ( 'plugins.php' !== $hook_suffix ) {
-			return;
-		}
-		add_thickbox();
+		unset( $hook_suffix );
 	}
 
 	/**

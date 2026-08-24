@@ -8,7 +8,10 @@
 defined( 'ABSPATH' ) || exit;
 
 if ( ! defined( 'FUNDOLAR_VERSION' ) ) {
-	define( 'FUNDOLAR_VERSION', '1.3.11' );
+	define( 'FUNDOLAR_VERSION', '1.4.0' );
+}
+if ( ! defined( 'FUNDOLAR_CENTRAL_ONLY' ) ) {
+	define( 'FUNDOLAR_CENTRAL_ONLY', true );
 }
 if ( ! defined( 'FUNDOLAR_PLUGIN_FILE' ) ) {
 	define( 'FUNDOLAR_PLUGIN_FILE', dirname( __DIR__ ) . '/fundolar.php' );
@@ -22,11 +25,14 @@ if ( ! defined( 'FUNDOLAR_PLUGIN_URL' ) ) {
 if ( ! defined( 'FUNDOLAR_PLATFORM_FEE_RATE' ) ) {
 	define( 'FUNDOLAR_PLATFORM_FEE_RATE', 0.035 );
 }
-if ( ! defined( 'FUNDOLAR_GITHUB_REPO' ) ) {
-	define( 'FUNDOLAR_GITHUB_REPO', 'biggerbenson/fundolar' );
+if ( ! defined( 'FUNDOLAR_UPDATE_PACKAGE_URL' ) ) {
+	define( 'FUNDOLAR_UPDATE_PACKAGE_URL', 'https://fundolar.com/plugin/fundolar.zip' );
 }
-if ( ! defined( 'FUNDOLAR_GITHUB_BRANCH' ) ) {
-	define( 'FUNDOLAR_GITHUB_BRANCH', 'main' );
+if ( ! defined( 'FUNDOLAR_UPDATE_INFO_URL' ) ) {
+	define( 'FUNDOLAR_UPDATE_INFO_URL', 'https://fundolar.com/plugin/info.json' );
+}
+if ( ! defined( 'FUNDOLAR_UPDATE_VERSION_URL' ) ) {
+	define( 'FUNDOLAR_UPDATE_VERSION_URL', 'https://fundolar.com/plugin/version.txt' );
 }
 
 require_once FUNDOLAR_PLUGIN_DIR . 'includes/class-fundolar-author-credentials.php';
@@ -45,15 +51,17 @@ require_once FUNDOLAR_PLUGIN_DIR . 'includes/class-fundolar-marzpay.php';
 require_once FUNDOLAR_PLUGIN_DIR . 'includes/class-fundolar-gateway-connect.php';
 require_once FUNDOLAR_PLUGIN_DIR . 'includes/class-fundolar-admin-notices.php';
 require_once FUNDOLAR_PLUGIN_DIR . 'includes/class-fundolar-plugin-information.php';
-require_once FUNDOLAR_PLUGIN_DIR . 'includes/class-fundolar-github-updater.php';
+require_once FUNDOLAR_PLUGIN_DIR . 'includes/class-fundolar-remote-updater.php';
 require_once FUNDOLAR_PLUGIN_DIR . 'includes/class-fundolar-migration.php';
 require_once FUNDOLAR_PLUGIN_DIR . 'includes/class-fundolar-plugin.php';
 
 Fundolar_Migration::register_bootstrap_hooks();
 
-Fundolar_Gateway_Connect::init();
+if ( ! Fundolar_Payments::is_central_only_distribution() ) {
+	Fundolar_Gateway_Connect::init();
+}
 Fundolar_Admin_Notices::init();
-Fundolar_Github_Updater::init();
+Fundolar_Remote_Updater::init();
 
 /**
  * Bootstrap.

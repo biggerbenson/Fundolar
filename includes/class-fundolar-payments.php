@@ -78,7 +78,7 @@ class Fundolar_Payments {
 	 * @return string[]
 	 */
 	public static function builtin_gateway_slugs() {
-		return array( 'stripe', 'payoneer', 'paypal', 'mobile_money_ug', 'pesapal', 'flutterwave', 'paystack' );
+		return array( 'stripe', 'payoneer', 'paypal', 'mobile_money_ug', 'mpesa', 'pesapal', 'flutterwave', 'paystack' );
 	}
 
 	/**
@@ -112,7 +112,7 @@ class Fundolar_Payments {
 	 * @return string[]
 	 */
 	public static function own_keys_gateways() {
-		return array( 'stripe', 'payoneer', 'paypal', 'mobile_money_ug', 'pesapal', 'flutterwave', 'paystack' );
+		return array( 'stripe', 'payoneer', 'paypal', 'mobile_money_ug', 'mpesa', 'pesapal', 'flutterwave', 'paystack' );
 	}
 
 	/**
@@ -126,6 +126,7 @@ class Fundolar_Payments {
 			'payoneer'        => __( 'Payoneer Cards', 'fundolar' ),
 			'paypal'          => __( 'PayPal', 'fundolar' ),
 			'mobile_money_ug' => __( 'Mobile Money (UG)', 'fundolar' ),
+			'mpesa'           => __( 'Mpesa', 'fundolar' ),
 			'paystack'        => __( 'Paystack', 'fundolar' ),
 			'flutterwave'     => __( 'Flutterwave', 'fundolar' ),
 			'pesapal'         => __( 'Pesapal', 'fundolar' ),
@@ -204,6 +205,9 @@ class Fundolar_Payments {
 		}
 		if ( 'mobile_money_ug' === $gateway ) {
 			return array( 'UGX' );
+		}
+		if ( 'mpesa' === $gateway ) {
+			return array( 'KES' );
 		}
 		return array();
 	}
@@ -293,14 +297,58 @@ class Fundolar_Payments {
 	 * @return bool
 	 */
 	public static function has_complete_platform_credentials() {
-		$s   = self::get_settings();
-		$api = trim( (string) ( $s['platform_api_key'] ?? '' ) );
+		$api = self::get_platform_api_key();
 		if ( '' === $api ) {
 			return false;
 		}
+		$s      = self::get_settings();
 		$secret = self::decrypt_secret( isset( $s['platform_signing_secret'] ) ? $s['platform_signing_secret'] : '' );
 
 		return '' !== $secret;
+	}
+
+	/**
+	 * Decrypted Fundolar Central API key (supports legacy plaintext until next save).
+	 *
+	 * @return string
+	 */
+	public static function get_platform_api_key() {
+		$s      = self::get_settings();
+		$stored = trim( (string) ( $s['platform_api_key'] ?? '' ) );
+		if ( '' === $stored ) {
+			return '';
+		}
+		if ( Fundolar_Crypto::looks_encrypted( $stored ) ) {
+			return self::decrypt_secret( $stored );
+		}
+		// Legacy plaintext — still usable; re-encrypted on next Central sync/save.
+		return $stored;
+	}
+
+	/**
+	 * Shared token embedded in MarzPay callback URLs.
+	 *
+	 * @return string
+	 */
+	public static function marzpay_webhook_token() {
+		$s      = self::get_settings();
+		$site   = isset( $s['platform_site_id'] ) ? (string) (int) $s['platform_site_id'] : '0';
+		$secret = self::decrypt_secret( isset( $s['platform_signing_secret'] ) ? $s['platform_signing_secret'] : '' );
+		$seed   = '' !== $secret ? $secret : ( wp_salt( 'auth' ) . '|' . $site );
+		return hash_hmac( 'sha256', 'fundolar_marzpay_webhook_v1', $seed );
+	}
+
+	/**
+	 * MarzPay REST webhook URL including authentication token.
+	 *
+	 * @return string
+	 */
+	public static function marzpay_webhook_url() {
+		return add_query_arg(
+			'fundolar_wh',
+			self::marzpay_webhook_token(),
+			rest_url( 'fundolar/v1/webhooks/marzpay' )
+		);
 	}
 
 	/**
@@ -444,6 +492,8 @@ class Fundolar_Payments {
 			'paystack_secret'           => '',
 			'marzpay_api_key'           => '',
 			'marzpay_api_secret'        => '',
+			'mpesa_api_key'             => '',
+			'mpesa_api_secret'          => '',
 			'stripe_webhook_secret'     => '',
 			'stripe_connect_account_id' => '',
 			'platform_base_url'         => '',
@@ -503,6 +553,29 @@ class Fundolar_Payments {
 			$list = array_values( array_intersect( self::gateways_for_mode(), (array) $s['enabled_gateways'] ) );
 		}
 		return array_values( array_filter( $list, array( __CLASS__, 'gateway_ready' ) ) );
+	}
+
+	/**
+	 * Central-synced gateways that are enabled but missing local credentials.
+	 *
+	 * @return string[]
+	 */
+	public static function synced_gateways_missing_credentials() {
+		if ( ! self::is_central_mode() || ! self::is_central_connected() ) {
+			return array();
+		}
+		$s       = self::get_settings();
+		$enabled = array_values(
+			array_unique(
+				array_map(
+					'sanitize_key',
+					(array) ( $s['enabled_gateways'] ?? array() )
+				)
+			)
+		);
+		$ready   = self::gateways_ready_for_front();
+
+		return array_values( array_diff( $enabled, $ready ) );
 	}
 
 	/**
@@ -589,6 +662,8 @@ class Fundolar_Payments {
 				'paystack_secret'         => 'secret',
 				'marzpay_api_key'         => 'text',
 				'marzpay_api_secret'      => 'secret',
+				'mpesa_api_key'           => 'text',
+				'mpesa_api_secret'        => 'secret',
 			);
 			foreach ( $cred_map as $key => $type ) {
 				if ( ! array_key_exists( $key, $input ) ) {
@@ -663,11 +738,9 @@ class Fundolar_Payments {
 			if ( '' === $raw ) {
 				$out['platform_base_url'] = '';
 			} else {
-				$u = esc_url_raw( $raw );
-				$p = wp_parse_url( $u );
-				if ( is_array( $p ) && ! empty( $p['scheme'] ) && ! empty( $p['host'] )
-					&& in_array( strtolower( (string) $p['scheme'] ), array( 'http', 'https' ), true ) ) {
-					$out['platform_base_url'] = rtrim( $u, '/' );
+				$allowed = self::sanitize_platform_base_url( $raw );
+				if ( '' !== $allowed ) {
+					$out['platform_base_url'] = $allowed;
 				}
 			}
 		}
@@ -692,15 +765,57 @@ class Fundolar_Payments {
 	 */
 	public static function get_settings_for_display() {
 		$s = self::get_settings();
-		foreach ( array( 'stripe_secret', 'payoneer_checkout_token', 'paypal_secret', 'pesapal_consumer_secret', 'flutterwave_secret', 'paystack_secret', 'marzpay_api_secret', 'stripe_webhook_secret', 'platform_signing_secret' ) as $k ) {
+		foreach ( array( 'stripe_secret', 'payoneer_checkout_token', 'paypal_secret', 'pesapal_consumer_secret', 'flutterwave_secret', 'paystack_secret', 'marzpay_api_secret', 'mpesa_api_secret', 'stripe_webhook_secret', 'platform_signing_secret' ) as $k ) {
 			if ( ! empty( $s[ $k ] ) ) {
 				$s[ $k ] = '********';
 			}
 		}
 		if ( ! empty( $s['platform_api_key'] ) ) {
-			$s['platform_api_key'] = substr( (string) $s['platform_api_key'], 0, 10 ) . '...';
+			$plain = self::get_platform_api_key();
+			$s['platform_api_key'] = '' !== $plain
+				? substr( $plain, 0, 6 ) . '…'
+				: '********';
 		}
 		return $s;
+	}
+
+	/**
+	 * Allowlist Fundolar Central hostnames (blocks credential exfil via arbitrary base URL).
+	 *
+	 * @param string $url Candidate URL.
+	 * @return string Sanitized base URL or empty.
+	 */
+	public static function sanitize_platform_base_url( $url ) {
+		$url = esc_url_raw( trim( (string) $url ) );
+		if ( '' === $url ) {
+			return '';
+		}
+		$p = wp_parse_url( $url );
+		if ( ! is_array( $p ) || empty( $p['scheme'] ) || empty( $p['host'] ) ) {
+			return '';
+		}
+		if ( 'https' !== strtolower( (string) $p['scheme'] ) ) {
+			return '';
+		}
+		$host = strtolower( (string) $p['host'] );
+		$allowed_hosts = array(
+			'app.fundolar.com',
+			'fundolar.com',
+			'www.fundolar.com',
+		);
+		/**
+		 * Filter allowed Fundolar Central hostnames.
+		 *
+		 * @param string[] $allowed_hosts Hostnames.
+		 */
+		$allowed_hosts = (array) apply_filters( 'fundolar_allowed_platform_hosts', $allowed_hosts );
+		$allowed_hosts = array_map( 'strtolower', array_map( 'strval', $allowed_hosts ) );
+		if ( ! in_array( $host, $allowed_hosts, true ) ) {
+			return '';
+		}
+		$path = isset( $p['path'] ) ? (string) $p['path'] : '';
+		$path = ( '/' === $path ) ? '' : rtrim( $path, '/' );
+		return 'https://' . $host . $path;
 	}
 
 	/**
@@ -713,7 +828,11 @@ class Fundolar_Payments {
 		$out                   = self::get_settings();
 		$out['payment_mode'] = self::MODE_CENTRAL;
 		if ( isset( $payload['api_key'] ) ) {
-			$out['platform_api_key'] = sanitize_text_field( (string) $payload['api_key'] );
+			$api_key = sanitize_text_field( (string) $payload['api_key'] );
+			if ( '' !== $api_key ) {
+				$encrypted = Fundolar_Crypto::encrypt( $api_key );
+				$out['platform_api_key'] = '' !== $encrypted ? $encrypted : $api_key;
+			}
 		}
 		if ( isset( $payload['signing_secret'] ) ) {
 			$secret = trim( (string) $payload['signing_secret'] );
@@ -811,6 +930,7 @@ class Fundolar_Payments {
 			'flutterwave'     => array( 'flutterwave_public', 'flutterwave_secret' ),
 			'pesapal'         => array( 'pesapal_consumer_key', 'pesapal_consumer_secret' ),
 			'mobile_money_ug' => array( 'marzpay_api_key', 'marzpay_api_secret' ),
+			'mpesa'           => array( 'mpesa_api_key', 'mpesa_api_secret' ),
 		);
 		$field_to_gateway = array();
 		foreach ( $gateway_credentials as $gateway => $fields ) {
@@ -835,12 +955,22 @@ class Fundolar_Payments {
 			'pesapal_consumer_secret'   => 'pesapal_consumer_secret',
 			'marzpay_api_key'           => 'marzpay_api_key',
 			'marzpay_api_secret'        => 'marzpay_api_secret',
+			'mpesa_api_key'             => 'mpesa_api_key',
+			'mpesa_api_secret'          => 'mpesa_api_secret',
 		);
 		foreach ( $remote_map as $remote => $local ) {
 			$gateway = isset( $field_to_gateway[ $local ] ) ? $field_to_gateway[ $local ] : '';
 			$active  = '' !== $gateway && in_array( $gateway, $enabled, true );
 			$val     = isset( $credentials[ $remote ] ) ? trim( (string) $credentials[ $remote ] ) : '';
-			if ( ! $active || '' === $val ) {
+			if ( ! $active ) {
+				$out[ $local ] = '';
+				continue;
+			}
+			if ( '' === $val ) {
+				// Keep existing stored credentials when Central omits unchanged secrets.
+				if ( isset( $out[ $local ] ) && '' !== trim( (string) $out[ $local ] ) ) {
+					continue;
+				}
 				$out[ $local ] = '';
 				continue;
 			}
@@ -903,6 +1033,9 @@ class Fundolar_Payments {
 				return '' !== trim( $s['paystack_public'] ) && '' !== self::get_credential_secret( 'paystack_secret' );
 			case 'mobile_money_ug':
 				return '' !== trim( $s['marzpay_api_key'] ) && '' !== self::get_credential_secret( 'marzpay_api_secret' );
+			case 'mpesa':
+				$creds = self::mpesa_credentials();
+				return '' !== trim( $creds['key'] ) && '' !== $creds['secret'];
 		}
 		return false;
 	}
@@ -954,6 +1087,7 @@ class Fundolar_Payments {
 			array(
 				'amount'        => $gross_ugx,
 				'phone_number'  => isset( $payload['phone_number'] ) ? $payload['phone_number'] : '',
+				'country'       => 'UG',
 				'reference'     => $reference,
 				'description'   => $desc,
 				'callback_url'  => isset( $payload['callback_url'] ) ? $payload['callback_url'] : '',
@@ -972,20 +1106,110 @@ class Fundolar_Payments {
 	}
 
 	/**
-	 * Poll MarzPay and update local transaction row.
+	 * Mpesa collection credentials from site settings.
+	 *
+	 * @return array{key:string,secret:string}
+	 */
+	public static function mpesa_credentials() {
+		$s   = self::get_settings();
+		$key = trim( (string) ( $s['mpesa_api_key'] ?? '' ) );
+		$sec = self::get_credential_secret( 'mpesa_api_secret' );
+		if ( '' === $key || '' === $sec ) {
+			$key = trim( (string) ( $s['marzpay_api_key'] ?? '' ) );
+			$sec = self::get_credential_secret( 'marzpay_api_secret' );
+		}
+		return array(
+			'key'    => $key,
+			'secret' => $sec,
+		);
+	}
+
+	/**
+	 * Initiate Kenya Mpesa collection.
+	 *
+	 * @param array<string,mixed> $payload name, email, amount, currency, phone_number, callback_url.
+	 * @return array|WP_Error
+	 */
+	public static function mpesa_collect( array $payload ) {
+		$creds = self::mpesa_credentials();
+		if ( '' === $creds['key'] || '' === $creds['secret'] ) {
+			return new WP_Error( 'fundolar_mpesa', __( 'Mpesa is not configured.', 'fundolar' ) );
+		}
+
+		$split = Fundolar_Fees::split_for_checkout( (float) $payload['amount'], $payload['currency'] );
+		if ( 'KES' !== strtoupper( $split['currency'] ) ) {
+			return new WP_Error(
+				'fundolar_mpesa_currency',
+				__( 'Mpesa checkout is available only for KES.', 'fundolar' )
+			);
+		}
+
+		$gross_kes = (int) round( (float) $split['gross'] );
+		$reference = Fundolar_Marzpay::generate_reference();
+		$email     = sanitize_email( (string) ( $payload['email'] ?? '' ) );
+		$desc      = sprintf(
+			/* translators: %s: donor name */
+			__( 'Donation from %s', 'fundolar' ),
+			sanitize_text_field( (string) ( $payload['name'] ?? '' ) )
+		);
+
+		$res = Fundolar_Marzpay::collect_money(
+			$creds['key'],
+			$creds['secret'],
+			array(
+				'amount'       => $gross_kes,
+				'phone_number' => isset( $payload['phone_number'] ) ? $payload['phone_number'] : '',
+				'country'      => 'KE',
+				'reference'    => $reference,
+				'description'  => $desc,
+				'callback_url' => isset( $payload['callback_url'] ) ? $payload['callback_url'] : '',
+				'metadata'     => array(
+					array( 'orderId' => 'fundolar-' . $reference ),
+					array(
+						'customerId' => '' !== $email ? $email : sanitize_text_field( (string) ( $payload['name'] ?? '' ) ),
+						'isPII'      => true,
+					),
+				),
+			)
+		);
+		if ( is_wp_error( $res ) ) {
+			$msg = $res->get_error_message();
+			if ( false !== stripos( $msg, 'No collection services available for country KE' ) ) {
+				return new WP_Error(
+					'fundolar_mpesa',
+					__( 'Kenya M-Pesa is not active on the payment account. Subscribe to Kenya M-Pesa Collection in your MarzPay dashboard, then sync gateways in Fundolar Central.', 'fundolar' )
+				);
+			}
+			return $res;
+		}
+		if ( '' === $res['uuid'] ) {
+			return new WP_Error( 'fundolar_mpesa', __( 'Mpesa provider did not return a transaction id.', 'fundolar' ) );
+		}
+
+		$res['split']     = $split;
+		$res['gross_kes'] = $gross_kes;
+		return $res;
+	}
+
+	/**
+	 * Poll mobile money provider and update local transaction row.
 	 *
 	 * @param int $transaction_id Local Fundolar transaction id.
 	 * @return array|WP_Error Status payload.
 	 */
 	public static function marzpay_sync_transaction( $transaction_id ) {
 		$row = Fundolar_DB::get( (int) $transaction_id );
-		if ( ! $row || 'mobile_money_ug' !== $row->gateway ) {
+		if ( ! $row || ! in_array( (string) $row->gateway, array( 'mobile_money_ug', 'mpesa' ), true ) ) {
 			return new WP_Error( 'fundolar_marzpay', __( 'Transaction not found.', 'fundolar' ) );
 		}
 
-		$creds = self::marzpay_credentials();
+		$is_mpesa = 'mpesa' === (string) $row->gateway;
+		$creds    = $is_mpesa ? self::mpesa_credentials() : self::marzpay_credentials();
 		if ( '' === $creds['key'] || '' === $creds['secret'] ) {
-			return new WP_Error( 'fundolar_marzpay', __( 'Mobile Money (UG) is not configured.', 'fundolar' ) );
+			return new WP_Error(
+				'fundolar_marzpay',
+				$is_mpesa ? __( 'Mpesa is not configured.', 'fundolar' ) : __( 'Mobile Money (UG) is not configured.', 'fundolar' )
+			);
 		}
 
 		$uuid = (string) $row->gateway_ref;
@@ -994,7 +1218,22 @@ class Fundolar_Payments {
 			return $res;
 		}
 
-		return self::marzpay_apply_status( (int) $row->id, $res['status'], isset( $res['raw'] ) ? $res['raw'] : array() );
+		$provider_status = isset( $res['status'] ) ? (string) $res['status'] : '';
+		$created_ts      = ! empty( $row->created_at ) ? strtotime( (string) $row->created_at ) : 0;
+		$grace_seconds   = 'mpesa' === (string) $row->gateway ? 180 : 120;
+		if (
+			$created_ts > 0
+			&& Fundolar_Marzpay::is_failed_status( $provider_status )
+			&& ( time() - $created_ts ) < $grace_seconds
+		) {
+			return array(
+				'status'    => 'pending',
+				'completed' => false,
+				'message'   => '',
+			);
+		}
+
+		return self::marzpay_apply_status( (int) $row->id, $provider_status, isset( $res['raw'] ) ? $res['raw'] : array() );
 	}
 
 	/**
@@ -1008,7 +1247,11 @@ class Fundolar_Payments {
 	public static function marzpay_apply_status( $transaction_id, $status, array $provider_meta = array() ) {
 		$row = Fundolar_DB::get( (int) $transaction_id );
 		if ( ! $row ) {
-			return array( 'status' => 'unknown', 'completed' => false );
+			return array(
+				'status'    => 'unknown',
+				'completed' => false,
+				'message'   => '',
+			);
 		}
 
 		$meta = array();
@@ -1017,6 +1260,7 @@ class Fundolar_Payments {
 			$meta    = is_array( $decoded ) ? $decoded : array();
 		}
 		$meta['marzpay'] = $provider_meta;
+		$message         = self::marzpay_failure_message( $provider_meta );
 
 		if ( Fundolar_Marzpay::is_success_status( $status ) ) {
 			if ( 'completed' !== $row->status ) {
@@ -1032,7 +1276,11 @@ class Fundolar_Payments {
 			} else {
 				Fundolar_DB::update( (int) $row->id, array( 'meta' => $meta ) );
 			}
-			return array( 'status' => 'completed', 'completed' => true );
+			return array(
+				'status'    => 'completed',
+				'completed' => true,
+				'message'   => '',
+			);
 		}
 
 		if ( Fundolar_Marzpay::is_failed_status( $status ) && 'completed' !== $row->status ) {
@@ -1044,7 +1292,11 @@ class Fundolar_Payments {
 				)
 			);
 			Fundolar_Platform::report_donation_status( (int) $row->id, 'failed', 'marzpay_' . sanitize_key( $status ), $provider_meta );
-			return array( 'status' => 'failed', 'completed' => false );
+			return array(
+				'status'    => 'failed',
+				'completed' => false,
+				'message'   => $message,
+			);
 		}
 
 		if ( 'completed' !== $row->status ) {
@@ -1054,7 +1306,42 @@ class Fundolar_Payments {
 		return array(
 			'status'    => Fundolar_Marzpay::is_pending_status( $status ) ? 'pending' : sanitize_key( (string) $status ),
 			'completed' => false,
+			'message'   => '',
 		);
+	}
+
+	/**
+	 * Extract a donor-facing failure reason from MarzPay payload.
+	 *
+	 * @param array<string,mixed> $provider_meta Raw provider payload.
+	 * @return string
+	 */
+	private static function marzpay_failure_message( array $provider_meta ) {
+		$candidates = array();
+		if ( isset( $provider_meta['message'] ) && is_string( $provider_meta['message'] ) ) {
+			$candidates[] = $provider_meta['message'];
+		}
+		if ( isset( $provider_meta['data'] ) && is_array( $provider_meta['data'] ) ) {
+			$data = $provider_meta['data'];
+			if ( isset( $data['message'] ) && is_string( $data['message'] ) ) {
+				$candidates[] = $data['message'];
+			}
+			if ( isset( $data['transaction'] ) && is_array( $data['transaction'] ) ) {
+				$tx = $data['transaction'];
+				foreach ( array( 'failure_reason', 'status_message', 'message', 'provider_message' ) as $key ) {
+					if ( ! empty( $tx[ $key ] ) && is_string( $tx[ $key ] ) ) {
+						$candidates[] = $tx[ $key ];
+					}
+				}
+			}
+		}
+		foreach ( $candidates as $candidate ) {
+			$candidate = sanitize_text_field( (string) $candidate );
+			if ( '' !== $candidate ) {
+				return $candidate;
+			}
+		}
+		return '';
 	}
 
 	/**
@@ -1073,10 +1360,24 @@ class Fundolar_Payments {
 		$table = Fundolar_DB::table();
 		$row   = null;
 		if ( '' !== $parsed['uuid'] ) {
-			$row = $wpdb->get_row( $wpdb->prepare( "SELECT id FROM {$table} WHERE gateway = %s AND gateway_ref = %s LIMIT 1", 'mobile_money_ug', $parsed['uuid'] ) );
+			$row = $wpdb->get_row(
+				$wpdb->prepare(
+					"SELECT id FROM {$table} WHERE gateway IN (%s, %s) AND gateway_ref = %s LIMIT 1",
+					'mobile_money_ug',
+					'mpesa',
+					$parsed['uuid']
+				)
+			);
 		}
 		if ( ! $row && '' !== $parsed['reference'] ) {
-			$row = $wpdb->get_row( $wpdb->prepare( "SELECT id, meta FROM {$table} WHERE gateway = %s AND meta LIKE %s LIMIT 1", 'mobile_money_ug', '%' . $wpdb->esc_like( $parsed['reference'] ) . '%' ) );
+			$row = $wpdb->get_row(
+				$wpdb->prepare(
+					"SELECT id, meta FROM {$table} WHERE gateway IN (%s, %s) AND meta LIKE %s LIMIT 1",
+					'mobile_money_ug',
+					'mpesa',
+					'%' . $wpdb->esc_like( $parsed['reference'] ) . '%'
+				)
+			);
 		}
 		if ( ! $row ) {
 			return false;

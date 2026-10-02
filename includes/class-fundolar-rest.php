@@ -309,6 +309,65 @@ class Fundolar_REST {
 	}
 
 	/**
+	 * Client IP for rate limiting (respects common reverse-proxy headers cautiously).
+	 *
+	 * @return string
+	 */
+	private static function client_ip() {
+		$ip = isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : '';
+		if ( empty( $_SERVER['HTTP_X_FORWARDED_FOR'] ) ) {
+			return $ip ? $ip : 'unknown';
+		}
+		$forwarded = sanitize_text_field( wp_unslash( $_SERVER['HTTP_X_FORWARDED_FOR'] ) );
+		$parts     = array_map( 'trim', explode( ',', $forwarded ) );
+		if ( ! empty( $parts[0] ) && filter_var( $parts[0], FILTER_VALIDATE_IP ) ) {
+			return $parts[0];
+		}
+		return $ip ? $ip : 'unknown';
+	}
+
+	/**
+	 * Soft rate limit for public donation endpoints.
+	 *
+	 * @param string $bucket  Bucket name.
+	 * @param int    $max     Max hits per window.
+	 * @param int    $window  Window in seconds.
+	 * @return true|WP_Error
+	 */
+	private static function enforce_donate_rate_limit( $bucket, $max = 20, $window = 60 ) {
+		$max    = max( 1, (int) $max );
+		$window = max( 10, (int) $window );
+		/**
+		 * Filter donation REST rate limits.
+		 *
+		 * @param array{max:int,window:int} $limits Limits.
+		 * @param string                    $bucket Bucket.
+		 */
+		$limits = apply_filters(
+			'fundolar_donate_rate_limit',
+			array(
+				'max'    => $max,
+				'window' => $window,
+			),
+			$bucket
+		);
+		$max    = max( 1, (int) ( $limits['max'] ?? $max ) );
+		$window = max( 10, (int) ( $limits['window'] ?? $window ) );
+
+		$key   = 'fundolar_rl_' . md5( $bucket . '|' . self::client_ip() );
+		$count = (int) get_transient( $key );
+		if ( $count >= $max ) {
+			return new WP_Error(
+				'fundolar_rate_limited',
+				__( 'Too many payment attempts. Please wait a moment and try again.', 'fundolar' ),
+				array( 'status' => 429 )
+			);
+		}
+		set_transient( $key, $count + 1, $window );
+		return true;
+	}
+
+	/**
 	 * Init payment session.
 	 *
 	 * @param WP_REST_Request $request Request.
@@ -344,7 +403,13 @@ class Fundolar_REST {
 		}
 
 		$return = $request->get_param( 'return_url' );
-		$return = $return ? esc_url_raw( $return ) : home_url( '/' );
+		$return = $return ? esc_url_raw( (string) $return ) : home_url( '/' );
+		$return = wp_validate_redirect( $return, home_url( '/' ) );
+
+		$rate = self::enforce_donate_rate_limit( 'init_payment' );
+		if ( is_wp_error( $rate ) ) {
+			return $rate;
+		}
 
 		$payload = array(
 			'name'         => $name,
@@ -568,13 +633,13 @@ class Fundolar_REST {
 				);
 			}
 			$phone = sanitize_text_field( (string) $request->get_param( 'phone_number' ) );
-			$phone = Fundolar_Marzpay::normalize_phone( $phone );
+			$phone = Fundolar_Marzpay::normalize_phone( $phone, 'UG' );
 			if ( is_wp_error( $phone ) ) {
 				return $phone;
 			}
 			$mm_payload                 = $payload;
 			$mm_payload['phone_number'] = $phone;
-			$mm_payload['callback_url'] = rest_url( 'fundolar/v1/webhooks/marzpay' );
+			$mm_payload['callback_url'] = Fundolar_Payments::marzpay_webhook_url();
 			$res                        = Fundolar_Payments::marzpay_collect( $mm_payload );
 			if ( is_wp_error( $res ) ) {
 				return $res;
@@ -613,6 +678,65 @@ class Fundolar_REST {
 					'marzpay_uuid'   => $res['uuid'],
 					'status'         => $res['status'],
 					'message'        => __( 'Check your phone and approve the Mobile Money prompt.', 'fundolar' ),
+					'receipt'        => $split['gross'],
+				)
+			);
+		}
+
+		if ( 'mpesa' === $gateway ) {
+			if ( 'KES' !== $split['currency'] ) {
+				return new WP_Error(
+					'fundolar_mpesa_currency',
+					__( 'Mpesa checkout is available only for KES.', 'fundolar' ),
+					array( 'status' => 400 )
+				);
+			}
+			$phone = sanitize_text_field( (string) $request->get_param( 'phone_number' ) );
+			$phone = Fundolar_Marzpay::normalize_phone( $phone, 'KE' );
+			if ( is_wp_error( $phone ) ) {
+				return $phone;
+			}
+			$mm_payload                 = $payload;
+			$mm_payload['phone_number'] = $phone;
+			$mm_payload['callback_url'] = Fundolar_Payments::marzpay_webhook_url();
+			$res                        = Fundolar_Payments::mpesa_collect( $mm_payload );
+			if ( is_wp_error( $res ) ) {
+				return $res;
+			}
+			$tid = Fundolar_DB::insert_checkout_transaction(
+				$name,
+				$email,
+				$split,
+				'mpesa',
+				$res['uuid'],
+				array(
+					'mpesa_reference' => $res['reference'],
+					'phone_number'    => $phone,
+				)
+			);
+			if ( ! $tid ) {
+				return new WP_Error( 'fundolar_db', __( 'Could not start payment. Please try again.', 'fundolar' ), array( 'status' => 500 ) );
+			}
+			Fundolar_Platform::report_donation_created(
+				(int) $tid,
+				array(
+					'donor_name'        => $name,
+					'donor_email'       => $email,
+					'payment_gateway'   => 'mpesa',
+					'gateway_reference' => $res['uuid'],
+					'currency'          => $split['currency'],
+					'gross_amount'      => $split['gross'],
+					'source_channel'    => 'wordpress_plugin',
+				)
+			);
+			return rest_ensure_response(
+				array(
+					'ok'             => true,
+					'gateway'        => 'mpesa',
+					'transaction_id' => $tid,
+					'marzpay_uuid'   => $res['uuid'],
+					'status'         => $res['status'],
+					'message'        => __( 'Check your phone and approve the M-Pesa prompt.', 'fundolar' ),
 					'receipt'        => $split['gross'],
 				)
 			);
@@ -680,6 +804,10 @@ class Fundolar_REST {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public static function paypal_capture( WP_REST_Request $request ) {
+		$rate = self::enforce_donate_rate_limit( 'paypal_capture' );
+		if ( is_wp_error( $rate ) ) {
+			return $rate;
+		}
 		$order_id = sanitize_text_field( (string) $request->get_param( 'order_id' ) );
 		if ( '' === $order_id ) {
 			return new WP_Error( 'fundolar_paypal', __( 'Missing order id.', 'fundolar' ), array( 'status' => 400 ) );
@@ -761,15 +889,17 @@ class Fundolar_REST {
 	private static function mark_paypal_tx( $order_id, $status, $json ) {
 		global $wpdb;
 		$table = Fundolar_DB::table();
-		$row   = $wpdb->get_row( $wpdb->prepare( "SELECT id FROM {$table} WHERE gateway = %s AND gateway_ref = %s LIMIT 1", 'paypal', $order_id ) );
+		$row   = $wpdb->get_row( $wpdb->prepare( "SELECT id, meta FROM {$table} WHERE gateway = %s AND gateway_ref = %s LIMIT 1", 'paypal', $order_id ) );
 		if ( ! $row ) {
 			return;
 		}
+		$meta = self::fundolar_decode_transaction_meta( $row->meta );
+		$meta['paypal'] = is_array( $json ) ? $json : array();
 		Fundolar_DB::update(
 			(int) $row->id,
 			array(
 				'status' => $status,
-				'meta'   => wp_json_encode( array( 'paypal' => $json ) ),
+				'meta'   => $meta,
 			)
 		);
 		if ( 'completed' === $status ) {
@@ -872,15 +1002,15 @@ class Fundolar_REST {
 		}
 		$meta = self::fundolar_decode_transaction_meta( $row->meta );
 		$meta['stripe'] = $obj;
-		if ( 'completed' === $row->status ) {
-			Fundolar_DB::update( (int) $row->id, array( 'meta' => $meta ) );
-			return;
-		}
-		if ( 'pending' === $row->status ) {
+		$already = ( 'completed' === $row->status );
+		if ( ! $already ) {
 			Fundolar_DB::update( (int) $row->id, array( 'status' => 'completed', 'meta' => $meta ) );
 			Fundolar_Emails::notify_donation_completed( (int) $row->id );
-			Fundolar_Platform::report_donation_status( (int) $row->id, 'completed', 'stripe_succeeded', $obj );
+		} else {
+			Fundolar_DB::update( (int) $row->id, array( 'meta' => $meta ) );
 		}
+		// Always sync Central (covers prior create/status failures and meta wipe).
+		Fundolar_Platform::report_donation_status( (int) $row->id, 'completed', 'stripe_succeeded', $obj );
 	}
 
 	/**
@@ -931,15 +1061,14 @@ class Fundolar_REST {
 
 		$meta = self::fundolar_decode_transaction_meta( $row->meta );
 		$meta['stripe_invoice'] = $inv;
-		if ( 'completed' === $row->status ) {
-			Fundolar_DB::update( (int) $row->id, array( 'meta' => $meta ) );
-			return;
-		}
-		if ( 'pending' === $row->status ) {
+		$already = ( 'completed' === $row->status );
+		if ( ! $already ) {
 			Fundolar_DB::update( (int) $row->id, array( 'status' => 'completed', 'meta' => $meta ) );
 			Fundolar_Emails::notify_donation_completed( (int) $row->id );
-			Fundolar_Platform::report_donation_status( (int) $row->id, 'completed', 'stripe_invoice_paid', $inv );
+		} else {
+			Fundolar_DB::update( (int) $row->id, array( 'meta' => $meta ) );
 		}
+		Fundolar_Platform::report_donation_status( (int) $row->id, 'completed', 'stripe_invoice_paid', $inv );
 	}
 
 	/**
@@ -996,6 +1125,10 @@ class Fundolar_REST {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public static function payoneer_verify( WP_REST_Request $request ) {
+		$rate = self::enforce_donate_rate_limit( 'payoneer_verify' );
+		if ( is_wp_error( $rate ) ) {
+			return $rate;
+		}
 		$reference = sanitize_text_field( (string) $request->get_param( 'reference' ) );
 		$long_id   = sanitize_text_field( (string) $request->get_param( 'long_id' ) );
 		if ( '' === $reference ) {
@@ -1015,6 +1148,10 @@ class Fundolar_REST {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public static function stripe_sync_intent( WP_REST_Request $request ) {
+		$rate = self::enforce_donate_rate_limit( 'stripe_sync' );
+		if ( is_wp_error( $rate ) ) {
+			return $rate;
+		}
 		$id = sanitize_text_field( (string) $request->get_param( 'payment_intent' ) );
 		if ( '' === $id || 0 !== strpos( $id, 'pi_' ) ) {
 			return new WP_Error( 'fundolar_stripe', __( 'Invalid payment reference.', 'fundolar' ), array( 'status' => 400 ) );
@@ -1049,13 +1186,14 @@ class Fundolar_REST {
 			$meta = self::fundolar_decode_transaction_meta( $row->meta );
 			$meta['stripe'] = $json;
 			if ( 'succeeded' === $status ) {
-				if ( 'completed' === $row->status ) {
-					Fundolar_DB::update( (int) $row->id, array( 'meta' => $meta ) );
-				} elseif ( 'pending' === $row->status ) {
+				$already = ( 'completed' === $row->status );
+				if ( ! $already ) {
 					Fundolar_DB::update( (int) $row->id, array( 'status' => 'completed', 'meta' => $meta ) );
 					Fundolar_Emails::notify_donation_completed( (int) $row->id );
-					Fundolar_Platform::report_donation_status( (int) $row->id, 'completed', 'stripe_succeeded', $json );
+				} else {
+					Fundolar_DB::update( (int) $row->id, array( 'meta' => $meta ) );
 				}
+				Fundolar_Platform::report_donation_status( (int) $row->id, 'completed', 'stripe_succeeded', $json );
 			} elseif ( in_array( $status, array( 'canceled', 'requires_payment_method' ), true ) ) {
 				if ( 'completed' !== $row->status ) {
 					Fundolar_DB::update( (int) $row->id, array( 'status' => 'failed', 'meta' => $meta ) );
@@ -1075,6 +1213,22 @@ class Fundolar_REST {
 	 * @return WP_REST_Response
 	 */
 	public static function webhook_marzpay( WP_REST_Request $request ) {
+		$rate = self::enforce_donate_rate_limit( 'marzpay_webhook', 60, MINUTE_IN_SECONDS );
+		if ( is_wp_error( $rate ) ) {
+			return new WP_REST_Response( array( 'error' => 'rate_limited' ), 429 );
+		}
+
+		$token = sanitize_text_field( (string) $request->get_param( 'fundolar_wh' ) );
+		if ( '' === $token ) {
+			$token = isset( $_SERVER['HTTP_X_FUNDOLAR_WEBHOOK_TOKEN'] )
+				? sanitize_text_field( wp_unslash( $_SERVER['HTTP_X_FUNDOLAR_WEBHOOK_TOKEN'] ) )
+				: '';
+		}
+		$expected = Fundolar_Payments::marzpay_webhook_token();
+		if ( '' === $token || ! hash_equals( $expected, $token ) ) {
+			return new WP_REST_Response( array( 'error' => 'unauthorized' ), 401 );
+		}
+
 		$json = json_decode( $request->get_body(), true );
 		if ( is_array( $json ) ) {
 			Fundolar_Payments::marzpay_handle_webhook( $json );
@@ -1089,13 +1243,17 @@ class Fundolar_REST {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public static function marzpay_status( WP_REST_Request $request ) {
+		$rate = self::enforce_donate_rate_limit( 'marzpay_status', 40, MINUTE_IN_SECONDS );
+		if ( is_wp_error( $rate ) ) {
+			return $rate;
+		}
 		$tid = (int) $request->get_param( 'transaction_id' );
 		$ref = sanitize_text_field( (string) $request->get_param( 'reference' ) );
 		if ( $tid < 1 || '' === $ref ) {
 			return new WP_Error( 'fundolar_marzpay', __( 'Invalid transaction.', 'fundolar' ), array( 'status' => 400 ) );
 		}
 		$row = Fundolar_DB::get( $tid );
-		if ( ! $row || 'mobile_money_ug' !== $row->gateway || ! hash_equals( (string) $row->gateway_ref, $ref ) ) {
+		if ( ! $row || ! in_array( (string) $row->gateway, array( 'mobile_money_ug', 'mpesa' ), true ) || ! hash_equals( (string) $row->gateway_ref, $ref ) ) {
 			return new WP_Error( 'fundolar_marzpay', __( 'Invalid transaction.', 'fundolar' ), array( 'status' => 403 ) );
 		}
 		$res = Fundolar_Payments::marzpay_sync_transaction( $tid );
@@ -1107,6 +1265,7 @@ class Fundolar_REST {
 				'ok'        => true,
 				'status'    => $res['status'],
 				'completed' => ! empty( $res['completed'] ),
+				'message'   => isset( $res['message'] ) ? (string) $res['message'] : '',
 			)
 		);
 	}

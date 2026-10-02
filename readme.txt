@@ -5,7 +5,7 @@ Tags: donations, fundraising, stripe, paypal, paystack
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.4.0
+Stable tag: 1.5.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -104,6 +104,18 @@ Consult your privacy policy and processor agreements for lawful bases and retent
 For each third-party API, what is sent, when, and links to terms and privacy policies, see **External services** above.
 
 == Changelog ==
+
+= 1.5.1 =
+* Security: validate donation return URLs with wp_validate_redirect (blocks open redirects).
+* Security: authenticate MarzPay webhooks with a per-site token; rate-limit donation REST endpoints.
+* Security: encrypt Central API keys at rest; require OpenSSL for secret storage (no plaintext fallback).
+* Security: allowlist Fundolar Central and update package hosts; optional SHA-256 package integrity check.
+
+= 1.5.0 =
+* Reliably record successful Stripe and PayPal donations in WordPress and Fundolar Central.
+* Preserve platform donation ids when updating PayPal transaction meta.
+* Re-create / upsert Central donation records when status sync runs without a prior create.
+* Hourly resync of completed donations that never linked to Central.
 
 = 1.4.0 =
 * Fundolar.com distribution: payments are managed exclusively through Fundolar Central (own API key fields removed from Settings).

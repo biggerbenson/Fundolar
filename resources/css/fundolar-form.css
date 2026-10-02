@@ -354,6 +354,18 @@
 	border-top: 1px solid var(--fundolar-field-border);
 }
 
+.fundolar-mobile-money-wrap {
+	margin-top: 1rem;
+	padding: 1rem;
+	border: 1px solid var(--fundolar-field-border);
+	border-radius: var(--fundolar-radius-sm);
+	background: color-mix(in srgb, var(--fundolar-accent) 6%, #fff);
+}
+
+.fundolar-mobile-money-wrap[hidden] {
+	display: none !important;
+}
+
 .fundolar-currency-wrap {
 	flex-shrink: 0;
 }
@@ -532,8 +544,8 @@
 .fundolar-gateway__logo {
 	display: block;
 	width: 100%;
-	max-width: 56px;
-	height: 36px;
+	max-width: 72px;
+	height: 40px;
 	margin: 0 auto;
 	object-fit: contain;
 	object-position: center;

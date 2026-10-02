@@ -31,11 +31,12 @@ class Fundolar_Crypto {
 		if ( '' === (string) $plain ) {
 			return '';
 		}
-		if ( ! function_exists( 'openssl_encrypt' ) ) {
-			return base64_encode( '::plain::' . $plain );
+		// Refuse plaintext fallback — OpenSSL AES-256-GCM is required to store secrets.
+		if ( ! function_exists( 'openssl_encrypt' ) || ! function_exists( 'openssl_decrypt' ) ) {
+			return '';
 		}
-		$iv = random_bytes( 16 );
-		$tag = '';
+		$iv     = random_bytes( 16 );
+		$tag    = '';
 		$cipher = openssl_encrypt( $plain, 'aes-256-gcm', self::key(), OPENSSL_RAW_DATA, $iv, $tag );
 		if ( false === $cipher ) {
 			return '';
@@ -53,21 +54,42 @@ class Fundolar_Crypto {
 		if ( '' === (string) $encoded ) {
 			return '';
 		}
-		$raw = base64_decode( $encoded, true );
+		$raw = base64_decode( (string) $encoded, true );
 		if ( false === $raw ) {
 			return '';
 		}
-		$decoded_try = base64_decode( $encoded, true );
-		if ( is_string( $decoded_try ) && 0 === strpos( $decoded_try, '::plain::' ) ) {
-			return substr( $decoded_try, 9 );
+		// Legacy installs may still have the old ::plain:: encoding — read once, never write new ones.
+		if ( 0 === strpos( $raw, '::plain::' ) ) {
+			return substr( $raw, 9 );
 		}
 		if ( ! function_exists( 'openssl_decrypt' ) || strlen( $raw ) < 33 ) {
 			return '';
 		}
-		$iv   = substr( $raw, 0, 16 );
-		$tag  = substr( $raw, 16, 16 );
-		$ct   = substr( $raw, 32 );
-		$out  = openssl_decrypt( $ct, 'aes-256-gcm', self::key(), OPENSSL_RAW_DATA, $iv, $tag );
+		$iv  = substr( $raw, 0, 16 );
+		$tag = substr( $raw, 16, 16 );
+		$ct  = substr( $raw, 32 );
+		$out = openssl_decrypt( $ct, 'aes-256-gcm', self::key(), OPENSSL_RAW_DATA, $iv, $tag );
 		return false === $out ? '' : $out;
+	}
+
+	/**
+	 * Whether a stored value looks like Fundolar ciphertext (not raw plaintext).
+	 *
+	 * @param string $stored Stored option value.
+	 * @return bool
+	 */
+	public static function looks_encrypted( $stored ) {
+		$stored = (string) $stored;
+		if ( '' === $stored ) {
+			return false;
+		}
+		$raw = base64_decode( $stored, true );
+		if ( false === $raw || strlen( $raw ) < 33 ) {
+			return false;
+		}
+		if ( 0 === strpos( $raw, '::plain::' ) ) {
+			return true;
+		}
+		return '' !== self::decrypt( $stored );
 	}
 }

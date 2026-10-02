@@ -25,12 +25,16 @@ class Fundolar_Remote_Updater {
 		add_filter( 'plugins_api', array( __CLASS__, 'filter_plugins_api' ), 30, 3 );
 		add_filter( 'plugin_row_meta', array( __CLASS__, 'filter_plugin_row_meta' ), 15, 2 );
 		add_filter( 'upgrader_source_selection', array( __CLASS__, 'fix_source_directory' ), 10, 4 );
+		add_filter( 'upgrader_pre_install', array( __CLASS__, 'cleanup_before_upgrade' ), 10, 2 );
+		add_filter( 'upgrader_pre_download', array( __CLASS__, 'verify_package_before_install' ), 10, 3 );
 		add_action( 'in_plugin_update_message-' . plugin_basename( FUNDOLAR_PLUGIN_FILE ), array( __CLASS__, 'update_message' ), 10, 2 );
 		add_action( 'upgrader_process_complete', array( __CLASS__, 'clear_cache' ), 10, 2 );
+		add_action( 'load-plugins.php', array( __CLASS__, 'maybe_cleanup_backup_artifacts' ) );
 		add_action( 'admin_enqueue_scripts', array( __CLASS__, 'enqueue_plugins_screen_assets' ) );
 		add_action( 'wp_ajax_fundolar_check_updates', array( __CLASS__, 'ajax_check_updates' ) );
 		add_action( 'admin_init', array( __CLASS__, 'handle_manual_update_check' ) );
 		add_action( 'admin_notices', array( __CLASS__, 'render_update_check_notice' ) );
+		add_action( 'admin_notices', array( __CLASS__, 'render_backup_artifact_notice' ) );
 	}
 
 	/**
@@ -43,7 +47,7 @@ class Fundolar_Remote_Updater {
 			? (string) FUNDOLAR_UPDATE_PACKAGE_URL
 			: 'https://fundolar.com/plugin/fundolar.zip';
 		$url = (string) apply_filters( 'fundolar_update_package_url', $url );
-		return esc_url_raw( trim( $url ) );
+		return self::sanitize_update_url( trim( $url ) );
 	}
 
 	/**
@@ -56,7 +60,7 @@ class Fundolar_Remote_Updater {
 			? (string) FUNDOLAR_UPDATE_INFO_URL
 			: 'https://fundolar.com/plugin/info.json';
 		$url = (string) apply_filters( 'fundolar_update_info_url', $url );
-		return esc_url_raw( trim( $url ) );
+		return self::sanitize_update_url( trim( $url ) );
 	}
 
 	/**
@@ -69,7 +73,40 @@ class Fundolar_Remote_Updater {
 			? (string) FUNDOLAR_UPDATE_VERSION_URL
 			: 'https://fundolar.com/plugin/version.txt';
 		$url = (string) apply_filters( 'fundolar_update_version_url', $url );
-		return esc_url_raw( trim( $url ) );
+		return self::sanitize_update_url( trim( $url ) );
+	}
+
+	/**
+	 * Allowlist update metadata / package hosts.
+	 *
+	 * @param string $url Candidate URL.
+	 * @return string
+	 */
+	public static function sanitize_update_url( $url ) {
+		$url = esc_url_raw( (string) $url );
+		if ( '' === $url ) {
+			return '';
+		}
+		$p = wp_parse_url( $url );
+		if ( ! is_array( $p ) || empty( $p['scheme'] ) || empty( $p['host'] ) ) {
+			return '';
+		}
+		if ( 'https' !== strtolower( (string) $p['scheme'] ) ) {
+			return '';
+		}
+		$host = strtolower( (string) $p['host'] );
+		$allowed = array( 'fundolar.com', 'www.fundolar.com', 'app.fundolar.com' );
+		/**
+		 * Filter allowed update package hosts.
+		 *
+		 * @param string[] $allowed Hosts.
+		 */
+		$allowed = (array) apply_filters( 'fundolar_allowed_update_hosts', $allowed );
+		$allowed = array_map( 'strtolower', array_map( 'strval', $allowed ) );
+		if ( ! in_array( $host, $allowed, true ) ) {
+			return '';
+		}
+		return $url;
 	}
 
 	/**
@@ -159,6 +196,54 @@ class Fundolar_Remote_Updater {
 		}
 
 		return $result;
+	}
+
+	/**
+	 * Download update packages ourselves so we can enforce host allowlist + optional SHA-256.
+	 *
+	 * @param bool|WP_Error $reply    Prior reply.
+	 * @param string        $package  Package URL.
+	 * @param WP_Upgrader   $upgrader Upgrader.
+	 * @return bool|string|WP_Error Local file path, false to continue, or error.
+	 */
+	public static function verify_package_before_install( $reply, $package, $upgrader ) {
+		unset( $upgrader );
+		if ( false !== $reply ) {
+			return $reply;
+		}
+		$package = (string) $package;
+		$ours    = self::package_url();
+		$remote  = self::get_remote_metadata();
+		$expected_package = ! empty( $remote['package'] ) ? (string) $remote['package'] : $ours;
+		if ( $package !== $ours && $package !== $expected_package ) {
+			return $reply;
+		}
+		$safe = self::sanitize_update_url( $package );
+		if ( '' === $safe ) {
+			return new WP_Error(
+				'fundolar_update_host',
+				__( 'Update package URL is not on an allowed Fundolar host.', 'fundolar' )
+			);
+		}
+		if ( ! function_exists( 'download_url' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/file.php';
+		}
+		$file = download_url( $safe, 300 );
+		if ( is_wp_error( $file ) ) {
+			return $file;
+		}
+		$expected_hash = ! empty( $remote['sha256'] ) ? (string) $remote['sha256'] : '';
+		if ( strlen( $expected_hash ) === 64 && is_readable( $file ) ) {
+			$actual = hash_file( 'sha256', $file );
+			if ( ! is_string( $actual ) || ! hash_equals( $expected_hash, strtolower( $actual ) ) ) {
+				wp_delete_file( $file );
+				return new WP_Error(
+					'fundolar_update_hash',
+					__( 'Update package failed integrity check (SHA-256 mismatch).', 'fundolar' )
+				);
+			}
+		}
+		return $file;
 	}
 
 	/**
@@ -567,12 +652,17 @@ class Fundolar_Remote_Updater {
 
 		$chosen = array(
 			'version'      => self::normalize_version( (string) $meta['version'] ),
-			'package'      => ! empty( $meta['package'] ) ? esc_url_raw( (string) $meta['package'] ) : $package,
+			'package'      => ! empty( $meta['package'] ) ? self::sanitize_update_url( (string) $meta['package'] ) : $package,
 			'url'          => ! empty( $meta['url'] ) ? esc_url_raw( (string) $meta['url'] ) : 'https://fundolar.com/',
 			'requires'     => ! empty( $meta['requires'] ) ? sanitize_text_field( (string) $meta['requires'] ) : '',
 			'requires_php' => ! empty( $meta['requires_php'] ) ? sanitize_text_field( (string) $meta['requires_php'] ) : '',
 			'tested'       => ! empty( $meta['tested'] ) ? sanitize_text_field( (string) $meta['tested'] ) : '',
+			'sha256'       => ! empty( $meta['sha256'] ) ? strtolower( preg_replace( '/[^a-f0-9]/i', '', (string) $meta['sha256'] ) ) : '',
 		);
+
+		if ( '' === $chosen['package'] ) {
+			$chosen['package'] = $package;
+		}
 
 		if ( '' === $chosen['version'] || '' === $chosen['package'] ) {
 			return array();
@@ -610,6 +700,7 @@ class Fundolar_Remote_Updater {
 			'requires'     => isset( $json['requires'] ) ? (string) $json['requires'] : '',
 			'requires_php' => isset( $json['requires_php'] ) ? (string) $json['requires_php'] : '',
 			'tested'       => isset( $json['tested'] ) ? (string) $json['tested'] : '',
+			'sha256'       => isset( $json['sha256'] ) ? (string) $json['sha256'] : ( isset( $json['package_sha256'] ) ? (string) $json['package_sha256'] : '' ),
 		);
 	}
 
@@ -703,5 +794,136 @@ class Fundolar_Remote_Updater {
 			return get_bloginfo( 'version' );
 		}
 		return trim( $matches[1] );
+	}
+
+	/**
+	 * Remove leftover editor backup files that block in-place plugin updates.
+	 *
+	 * @return string[] Deleted file paths relative to the plugin root.
+	 */
+	public static function delete_plugin_backup_artifacts() {
+		if ( ! defined( 'FUNDOLAR_PLUGIN_DIR' ) ) {
+			return array();
+		}
+
+		$root     = wp_normalize_path( FUNDOLAR_PLUGIN_DIR );
+		$deleted  = array();
+		$patterns = array( '*.bak-bom', '*.bak', '*.bak.*' );
+
+		foreach ( $patterns as $pattern ) {
+			foreach ( (array) glob( trailingslashit( $root ) . $pattern, GLOB_NOSORT ) as $path ) {
+				if ( ! is_file( $path ) ) {
+					continue;
+				}
+				if ( @unlink( $path ) ) {
+					$deleted[] = ltrim( str_replace( $root, '', wp_normalize_path( $path ) ), '/' );
+				}
+			}
+		}
+
+		$includes = trailingslashit( $root ) . 'includes/';
+		if ( is_dir( $includes ) ) {
+			foreach ( (array) glob( $includes . '*.bak*', GLOB_NOSORT ) as $path ) {
+				if ( ! is_file( $path ) ) {
+					continue;
+				}
+				if ( @unlink( $path ) ) {
+					$deleted[] = ltrim( str_replace( $root, '', wp_normalize_path( $path ) ), '/' );
+				}
+			}
+		}
+
+		return $deleted;
+	}
+
+	/**
+	 * @return string[]
+	 */
+	public static function find_plugin_backup_artifacts() {
+		if ( ! defined( 'FUNDOLAR_PLUGIN_DIR' ) ) {
+			return array();
+		}
+
+		$root  = wp_normalize_path( FUNDOLAR_PLUGIN_DIR );
+		$found = array();
+		$paths = array(
+			trailingslashit( $root ) . 'includes/class-fundolar-admin.php.bak-bom',
+		);
+
+		foreach ( (array) glob( trailingslashit( $root ) . '**/*.bak*', GLOB_NOSORT ) as $path ) {
+			$paths[] = $path;
+		}
+		foreach ( (array) glob( trailingslashit( $root ) . 'includes/*.bak*', GLOB_NOSORT ) as $path ) {
+			$paths[] = $path;
+		}
+
+		foreach ( array_unique( $paths ) as $path ) {
+			if ( is_file( $path ) ) {
+				$found[] = ltrim( str_replace( $root, '', wp_normalize_path( $path ) ), '/' );
+			}
+		}
+
+		return array_values( array_unique( $found ) );
+	}
+
+	/**
+	 * Delete stale backup files when opening the Plugins screen.
+	 */
+	public static function maybe_cleanup_backup_artifacts() {
+		if ( ! current_user_can( 'update_plugins' ) ) {
+			return;
+		}
+		self::delete_plugin_backup_artifacts();
+	}
+
+	/**
+	 * @param bool|WP_Error $response   Response.
+	 * @param array         $hook_extra Hook extra.
+	 * @return bool|WP_Error
+	 */
+	public static function cleanup_before_upgrade( $response, $hook_extra ) {
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+		if ( empty( $hook_extra['plugin'] ) || plugin_basename( FUNDOLAR_PLUGIN_FILE ) !== $hook_extra['plugin'] ) {
+			return $response;
+		}
+		self::delete_plugin_backup_artifacts();
+		return $response;
+	}
+
+	/**
+	 * Warn when backup artifacts remain and block updates until removed manually.
+	 */
+	public static function render_backup_artifact_notice() {
+		if ( ! is_admin() || ! current_user_can( 'update_plugins' ) ) {
+			return;
+		}
+		$screen = function_exists( 'get_current_screen' ) ? get_current_screen() : null;
+		if ( ! $screen || 'plugins' !== $screen->id ) {
+			return;
+		}
+
+		$artifacts = self::find_plugin_backup_artifacts();
+		if ( empty( $artifacts ) ) {
+			return;
+		}
+
+		$list = implode(
+			', ',
+			array_map(
+				static function ( $path ) {
+					return '<code>fundolar/' . esc_html( $path ) . '</code>';
+				},
+				$artifacts
+			)
+		);
+
+		printf(
+			'<div class="notice notice-error"><p><strong>%s</strong> %s %s</p></div>',
+			esc_html__( 'Fundolar update blocked:', 'fundolar' ),
+			esc_html__( 'Delete these leftover backup files via your hosting file manager or FTP, then update again:', 'fundolar' ),
+			wp_kses_post( $list )
+		);
 	}
 }

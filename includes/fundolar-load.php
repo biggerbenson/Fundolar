@@ -8,7 +8,7 @@
 defined( 'ABSPATH' ) || exit;
 
 if ( ! defined( 'FUNDOLAR_VERSION' ) ) {
-	define( 'FUNDOLAR_VERSION', '1.4.0' );
+	define( 'FUNDOLAR_VERSION', '1.5.1' );
 }
 if ( ! defined( 'FUNDOLAR_CENTRAL_ONLY' ) ) {
 	define( 'FUNDOLAR_CENTRAL_ONLY', true );

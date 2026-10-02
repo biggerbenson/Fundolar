@@ -68,6 +68,7 @@ class Fundolar_Form {
 		$enabled_toggled = array_values( array_unique( array_map( 'sanitize_key', (array) $s['enabled_gateways'] ) ) );
 		$enabled         = Fundolar_Payments::gateways_ready_for_front();
 		$has_mobile_ug   = in_array( 'mobile_money_ug', $enabled, true );
+		$has_mpesa       = in_array( 'mpesa', $enabled, true );
 		$first_gw        = isset( $enabled[0] ) ? $enabled[0] : '';
 		$layout          = isset( $s['form_layout'] ) ? sanitize_key( $s['form_layout'] ) : 'portrait';
 		if ( ! array_key_exists( $layout, Fundolar_Payments::form_layouts() ) ) {
@@ -119,6 +120,11 @@ class Fundolar_Form {
 								<?php if ( in_array( 'mobile_money_ug', $enabled_toggled, true ) ) : ?>
 									<p class="fundolar-field__hint fundolar-currency-hint" id="fundolar-ugx-hint" <?php echo $has_mobile_ug ? 'hidden' : ''; ?>>
 										<?php esc_html_e( 'Select UGX to pay with Mobile Money (Uganda).', 'fundolar' ); ?>
+									</p>
+								<?php endif; ?>
+								<?php if ( in_array( 'mpesa', $enabled_toggled, true ) ) : ?>
+									<p class="fundolar-field__hint fundolar-currency-hint" id="fundolar-kes-hint" <?php echo $has_mpesa ? 'hidden' : ''; ?>>
+										<?php esc_html_e( 'Select KES to pay with Mpesa.', 'fundolar' ); ?>
 									</p>
 								<?php endif; ?>
 							</div>
@@ -202,7 +208,9 @@ class Fundolar_Form {
 				<?php elseif ( ! empty( $enabled_toggled ) ) : ?>
 					<p class="fundolar-notice">
 						<?php
-						if ( in_array( 'mobile_money_ug', $enabled_toggled, true ) && ! in_array( 'mobile_money_ug', $enabled, true ) ) {
+						if ( in_array( 'mpesa', $enabled_toggled, true ) && ! in_array( 'mpesa', $enabled, true ) ) {
+							esc_html_e( 'Mpesa is enabled in Fundolar Central but has not synced yet. Open Fundolar → Settings → Payments and click Sync gateways.', 'fundolar' );
+						} elseif ( in_array( 'mobile_money_ug', $enabled_toggled, true ) && ! in_array( 'mobile_money_ug', $enabled, true ) ) {
 							esc_html_e( 'Mobile Money (UG) is enabled in Fundolar Central but has not synced yet. Open Fundolar → Settings → Payments and click Sync gateways.', 'fundolar' );
 						} else {
 							esc_html_e( 'Payment methods are enabled in Fundolar Central but not fully configured yet. Finish setup in your Fundolar dashboard, then sync again under Settings → Payments.', 'fundolar' );
@@ -218,11 +226,11 @@ class Fundolar_Form {
 					<div id="fundolar-payoneer-card-element" class="fundolar-payoneer-cards"></div>
 				</div>
 				<div id="fundolar-paypal-container" class="fundolar-paypal-wrap" hidden></div>
-				<div id="fundolar-mobile-money-wrap" class="fundolar-mobile-money-wrap" hidden>
+				<div id="fundolar-mobile-money-wrap" class="fundolar-mobile-money-wrap fundolar-section" hidden>
 					<div class="fundolar-field">
-						<label class="fundolar-field__label" for="fundolar-mobile-phone"><?php esc_html_e( 'Mobile Money phone (Uganda)', 'fundolar' ); ?> <abbr class="fundolar-required" title="<?php esc_attr_e( 'required', 'fundolar' ); ?>">*</abbr></label>
-						<input type="tel" id="fundolar-mobile-phone" class="fundolar-input" inputmode="tel" autocomplete="tel" placeholder="<?php esc_attr_e( 'e.g. 0771234567', 'fundolar' ); ?>" />
-						<p class="fundolar-field__hint"><?php esc_html_e( 'MTN or Airtel number. You will receive a prompt on your phone to approve payment.', 'fundolar' ); ?></p>
+						<label class="fundolar-field__label" for="fundolar-mobile-phone" id="fundolar-mobile-phone-label"><?php esc_html_e( 'Mobile money phone', 'fundolar' ); ?> <abbr class="fundolar-required" title="<?php esc_attr_e( 'required', 'fundolar' ); ?>">*</abbr></label>
+						<input type="tel" id="fundolar-mobile-phone" name="mobile_phone" class="fundolar-input" inputmode="tel" autocomplete="tel-national" placeholder="<?php esc_attr_e( 'e.g. 07…', 'fundolar' ); ?>" />
+						<p class="fundolar-field__hint" id="fundolar-mobile-phone-hint"><?php esc_html_e( 'You will receive a prompt on your phone to approve payment.', 'fundolar' ); ?></p>
 					</div>
 				</div>
 				<div id="fundolar-message" class="fundolar-message" role="status" aria-live="polite"></div>

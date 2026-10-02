@@ -134,8 +134,7 @@ class Fundolar_Admin_Notices {
 	 * @return bool
 	 */
 	private static function is_connected_to_central() {
-		$s = Fundolar_Payments::get_settings();
-		return ! empty( $s['platform_api_key'] );
+		return '' !== Fundolar_Payments::get_platform_api_key();
 	}
 
 	/**

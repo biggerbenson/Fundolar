@@ -101,32 +101,36 @@ class Fundolar_Platform {
 	 * @return string Non-empty in normal setups; empty only if filtered away.
 	 */
 	public static function base_url() {
-		$s      = Fundolar_Payments::get_settings();
-		$stored = isset( $s['platform_base_url'] ) ? trim( (string) $s['platform_base_url'] ) : '';
-		$base   = '';
-
-		if ( '' !== $stored ) {
-			$p = wp_parse_url( $stored );
-			if ( is_array( $p ) && ! empty( $p['scheme'] ) && ! empty( $p['host'] )
-				&& in_array( strtolower( (string) $p['scheme'] ), array( 'http', 'https' ), true ) ) {
-				$base = $stored;
-			}
-		} elseif ( defined( 'FUNDOLAR_CENTRAL_URL' ) && is_string( FUNDOLAR_CENTRAL_URL ) ) {
+		// Trusted wp-config override (HTTPS required).
+		if ( defined( 'FUNDOLAR_CENTRAL_URL' ) && is_string( FUNDOLAR_CENTRAL_URL ) ) {
 			$cfg = trim( FUNDOLAR_CENTRAL_URL );
 			if ( '' !== $cfg ) {
 				$p = wp_parse_url( $cfg );
 				if ( is_array( $p ) && ! empty( $p['scheme'] ) && ! empty( $p['host'] )
-					&& in_array( strtolower( (string) $p['scheme'] ), array( 'http', 'https' ), true ) ) {
-					$base = $cfg;
+					&& 'https' === strtolower( (string) $p['scheme'] ) ) {
+					return rtrim( $cfg, '/' );
 				}
 			}
 		}
+
+		$s      = Fundolar_Payments::get_settings();
+		$stored = isset( $s['platform_base_url'] ) ? trim( (string) $s['platform_base_url'] ) : '';
+		$base   = '' !== $stored ? Fundolar_Payments::sanitize_platform_base_url( $stored ) : '';
 
 		if ( '' === $base ) {
 			$base = self::PLATFORM_BASE_URL;
 		}
 
+		/**
+		 * Filter Central base URL. Result must stay on an allowed Fundolar host.
+		 *
+		 * @param string $base Base URL.
+		 */
 		$url = (string) apply_filters( 'fundolar_platform_base_url', $base );
+		$url = Fundolar_Payments::sanitize_platform_base_url( $url );
+		if ( '' === $url ) {
+			$url = self::PLATFORM_BASE_URL;
+		}
 		return rtrim( $url, '/' );
 	}
 
@@ -363,6 +367,7 @@ class Fundolar_Platform {
 			$force = empty( $ready )
 				|| empty( $s['enabled_gateways'] )
 				|| ! empty( $s['platform_sync_error'] )
+				|| ! empty( Fundolar_Payments::synced_gateways_missing_credentials() )
 				|| Fundolar_Payments::platform_sync_is_stale( self::DISPLAY_SYNC_STALE_SECONDS );
 		}
 
@@ -471,8 +476,7 @@ class Fundolar_Platform {
 	 * @return array{synced:int,failed:int,remaining:int}|WP_Error
 	 */
 	public static function sync_historical_donations( $batch_size = 50 ) {
-		$s   = Fundolar_Payments::get_settings();
-		$api = trim( (string) $s['platform_api_key'] );
+		$api = Fundolar_Payments::get_platform_api_key();
 		if ( '' === $api ) {
 			return new WP_Error( 'fundolar_platform_not_connected', __( 'This site is not connected yet. Use your site key to connect.', 'fundolar' ) );
 		}
@@ -554,29 +558,101 @@ class Fundolar_Platform {
 	 *
 	 * @param int   $local_id Local transaction id.
 	 * @param array $payload  Donation payload.
-	 * @return void
+	 * @return array|WP_Error|null Central response array on success.
 	 */
 	public static function report_donation_created( $local_id, array $payload ) {
+		$local_id = (int) $local_id;
+		$row      = Fundolar_DB::get( $local_id );
+		if ( ! $row ) {
+			return null;
+		}
+
+		$meta = array();
+		if ( ! empty( $row->meta ) ) {
+			$decoded = json_decode( (string) $row->meta, true );
+			if ( is_array( $decoded ) ) {
+				$meta = $decoded;
+			}
+		}
+		// Already linked — skip duplicate create.
+		if ( ! empty( $meta['platform_donation_id'] ) || ! empty( $meta['platform_donation_uuid'] ) ) {
+			return array(
+				'id'   => (int) ( $meta['platform_donation_id'] ?? 0 ),
+				'uuid' => (string) ( $meta['platform_donation_uuid'] ?? '' ),
+			);
+		}
+
+		$idempotency = 'wp_' . (int) get_current_blog_id() . '_' . $local_id;
+		if ( ! empty( $row->gateway_ref ) ) {
+			$idempotency = 'wp_' . sanitize_key( (string) $row->gateway ) . '_' . substr( sanitize_text_field( (string) $row->gateway_ref ), 0, 120 );
+		}
+
 		$body = wp_parse_args(
 			$payload,
 			array(
-				'local_plugin_record_id' => (int) $local_id,
+				'local_plugin_record_id' => $local_id,
+				'donor_name'             => (string) ( $row->donor_name ?? '' ),
+				'donor_email'            => (string) ( $row->donor_email ?? '' ),
+				'payment_gateway'        => (string) ( $row->gateway ?? 'unknown' ),
+				'gateway_reference'      => (string) ( $row->gateway_ref ?? '' ),
+				'currency'               => (string) ( $row->currency ?? 'USD' ),
+				'gross_amount'           => (float) ( $row->amount_gross ?? 0 ),
+				'source_channel'         => 'wordpress_plugin',
+				'idempotency_key'        => $idempotency,
 			)
 		);
+
+		// Map common gateway fields for Central lookup/upsert.
+		$gateway = strtolower( (string) ( $body['payment_gateway'] ?? $row->gateway ?? '' ) );
+		$ref     = (string) ( $body['gateway_reference'] ?? $row->gateway_ref ?? '' );
+		if ( 'stripe' === $gateway && $ref !== '' && empty( $body['gateway_payment_intent'] ) ) {
+			$body['gateway_payment_intent'] = $ref;
+		}
+		if ( 'paypal' === $gateway && $ref !== '' && empty( $body['gateway_order_id'] ) ) {
+			$body['gateway_order_id'] = $ref;
+		}
+
 		$res = self::signed_request( 'POST', '/api/plugin/donations/create', $body );
 		if ( is_wp_error( $res ) ) {
+			$meta['central_sync_error'] = $res->get_error_message();
+			$meta['central_sync_at']    = gmdate( 'c' );
+			Fundolar_DB::update( $local_id, array( 'meta' => $meta ) );
 			if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
 				// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
 				error_log( 'Fundolar donations/create: ' . $res->get_error_message() );
 			}
-			return;
+			return $res;
 		}
 		if ( ! is_array( $res ) ) {
-			return;
+			return null;
 		}
-		$row = Fundolar_DB::get( (int) $local_id );
+		if ( isset( $res['id'] ) ) {
+			$meta['platform_donation_id'] = (int) $res['id'];
+		}
+		if ( isset( $res['uuid'] ) ) {
+			$meta['platform_donation_uuid'] = (string) $res['uuid'];
+		}
+		unset( $meta['central_sync_error'] );
+		$meta['central_sync_at'] = gmdate( 'c' );
+		Fundolar_DB::update( $local_id, array( 'meta' => $meta ) );
+		return $res;
+	}
+
+	/**
+	 * Ensure the local transaction has a Central donation id (create if missing).
+	 *
+	 * @param int $local_id Local transaction id.
+	 * @return array{donation_id:?int,uuid:string}
+	 */
+	public static function ensure_platform_donation( $local_id ) {
+		$local_id = (int) $local_id;
+		$row      = Fundolar_DB::get( $local_id );
+		$out      = array(
+			'donation_id' => null,
+			'uuid'        => '',
+		);
 		if ( ! $row ) {
-			return;
+			return $out;
 		}
 		$meta = array();
 		if ( ! empty( $row->meta ) ) {
@@ -585,13 +661,31 @@ class Fundolar_Platform {
 				$meta = $decoded;
 			}
 		}
-		if ( isset( $res['id'] ) ) {
-			$meta['platform_donation_id'] = (int) $res['id'];
+		if ( ! empty( $meta['platform_donation_id'] ) ) {
+			$out['donation_id'] = (int) $meta['platform_donation_id'];
 		}
-		if ( isset( $res['uuid'] ) ) {
-			$meta['platform_donation_uuid'] = (string) $res['uuid'];
+		if ( ! empty( $meta['platform_donation_uuid'] ) ) {
+			$out['uuid'] = (string) $meta['platform_donation_uuid'];
 		}
-		Fundolar_DB::update( (int) $local_id, array( 'meta' => $meta ) );
+		if ( null !== $out['donation_id'] || '' !== $out['uuid'] ) {
+			return $out;
+		}
+
+		$created = self::report_donation_created(
+			$local_id,
+			array(
+				'payment_status_hint' => (string) ( $row->status ?? 'pending' ),
+			)
+		);
+		if ( is_array( $created ) ) {
+			if ( ! empty( $created['id'] ) ) {
+				$out['donation_id'] = (int) $created['id'];
+			}
+			if ( ! empty( $created['uuid'] ) ) {
+				$out['uuid'] = (string) $created['uuid'];
+			}
+		}
+		return $out;
 	}
 
 	/**
@@ -604,39 +698,122 @@ class Fundolar_Platform {
 	 * @return void
 	 */
 	public static function report_donation_status( $local_id, $status, $gateway_status = '', array $raw = array() ) {
-		$donation_id = null;
-		$uuid        = '';
-		$row         = Fundolar_DB::get( (int) $local_id );
-		if ( $row && ! empty( $row->meta ) ) {
-			$decoded = json_decode( (string) $row->meta, true );
-			if ( is_array( $decoded ) ) {
-				if ( ! empty( $decoded['platform_donation_id'] ) ) {
-					$donation_id = (int) $decoded['platform_donation_id'];
-				}
-				if ( ! empty( $decoded['platform_donation_uuid'] ) ) {
-					$uuid = (string) $decoded['platform_donation_uuid'];
-				}
-			}
+		$local_id = (int) $local_id;
+		$row      = Fundolar_DB::get( $local_id );
+		if ( ! $row ) {
+			return;
+		}
+
+		$link = self::ensure_platform_donation( $local_id );
+		$donation_id = $link['donation_id'];
+		$uuid        = $link['uuid'];
+
+		// Re-read after ensure_* may have written platform ids into meta.
+		$row = Fundolar_DB::get( $local_id );
+		if ( ! $row ) {
+			return;
 		}
 
 		$payload = array(
-			'payment_status' => (string) $status,
-			'gateway_status' => (string) $gateway_status,
-			'raw_response'   => $raw,
+			'payment_status'         => (string) $status,
+			'gateway_status'         => (string) $gateway_status,
+			'raw_response'           => $raw,
+			'local_plugin_record_id' => $local_id,
+			'payment_gateway'        => (string) ( $row->gateway ?? '' ),
+			'gateway_reference'      => (string) ( $row->gateway_ref ?? '' ),
+			'currency'               => (string) ( $row->currency ?? 'USD' ),
+			'gross_amount'           => (float) ( $row->amount_gross ?? 0 ),
+			'donor_name'             => (string) ( $row->donor_name ?? '' ),
+			'donor_email'            => (string) ( $row->donor_email ?? '' ),
+			'upsert'                 => true,
 		);
+		$gateway = strtolower( (string) ( $row->gateway ?? '' ) );
+		$ref     = (string) ( $row->gateway_ref ?? '' );
+		if ( 'stripe' === $gateway && $ref !== '' ) {
+			$payload['gateway_payment_intent'] = $ref;
+		}
+		if ( 'paypal' === $gateway && $ref !== '' ) {
+			$payload['gateway_order_id'] = $ref;
+		}
 		if ( null !== $donation_id && $donation_id > 0 ) {
 			$payload['donation_id'] = $donation_id;
 		} elseif ( '' !== $uuid ) {
 			$payload['uuid'] = $uuid;
-		} else {
-			return;
 		}
 
-		self::signed_request(
+		$res = self::signed_request(
 			'POST',
 			'/api/plugin/donations/update-status',
 			$payload
 		);
+
+		$meta = array();
+		if ( ! empty( $row->meta ) ) {
+			$decoded = json_decode( (string) $row->meta, true );
+			if ( is_array( $decoded ) ) {
+				$meta = $decoded;
+			}
+		}
+		if ( is_wp_error( $res ) ) {
+			$meta['central_status_error'] = $res->get_error_message();
+			$meta['central_status_at']    = gmdate( 'c' );
+			$meta['central_needs_resync'] = 1;
+			Fundolar_DB::update( $local_id, array( 'meta' => $meta ) );
+			return;
+		}
+		if ( is_array( $res ) ) {
+			if ( ! empty( $res['id'] ) ) {
+				$meta['platform_donation_id'] = (int) $res['id'];
+			}
+			if ( ! empty( $res['uuid'] ) ) {
+				$meta['platform_donation_uuid'] = (string) $res['uuid'];
+			}
+			unset( $meta['central_status_error'], $meta['central_needs_resync'], $meta['central_sync_error'] );
+			$meta['central_status_at'] = gmdate( 'c' );
+			Fundolar_DB::update( $local_id, array( 'meta' => $meta ) );
+		}
+	}
+
+	/**
+	 * Retry Central sync for completed local donations missing platform ids.
+	 *
+	 * @param int $limit Max rows.
+	 * @return int Number attempted.
+	 */
+	public static function resync_completed_donations( $limit = 25 ) {
+		if ( ! Fundolar_Payments::is_central_connected() ) {
+			return 0;
+		}
+		global $wpdb;
+		$table = Fundolar_DB::table();
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT id, meta FROM {$table} WHERE status = %s ORDER BY id DESC LIMIT %d",
+				'completed',
+				max( 1, min( 100, (int) $limit ) )
+			)
+		);
+		if ( ! is_array( $rows ) ) {
+			return 0;
+		}
+		$n = 0;
+		foreach ( $rows as $row ) {
+			$meta = array();
+			if ( ! empty( $row->meta ) ) {
+				$decoded = json_decode( (string) $row->meta, true );
+				if ( is_array( $decoded ) ) {
+					$meta = $decoded;
+				}
+			}
+			$needs = empty( $meta['platform_donation_id'] ) || ! empty( $meta['central_needs_resync'] ) || ! empty( $meta['central_sync_error'] );
+			if ( ! $needs ) {
+				continue;
+			}
+			self::report_donation_status( (int) $row->id, 'completed', 'resync_completed', array( 'source' => 'cron_resync' ) );
+			++$n;
+		}
+		return $n;
 	}
 
 	/**
@@ -650,7 +827,7 @@ class Fundolar_Platform {
 	public static function signed_request( $method, $path, array $body = array() ) {
 		$s      = Fundolar_Payments::get_settings();
 		$base   = self::base_url();
-		$api    = trim( (string) $s['platform_api_key'] );
+		$api    = Fundolar_Payments::get_platform_api_key();
 		$secret = Fundolar_Payments::decrypt_secret( isset( $s['platform_signing_secret'] ) ? $s['platform_signing_secret'] : '' );
 		if ( '' === $base ) {
 			return new WP_Error( 'fundolar_platform_no_base_url', self::missing_base_url_message() );

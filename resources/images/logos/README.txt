@@ -5,7 +5,8 @@ Place brand-approved artwork in this folder using these exact base names:
 
   stripe.svg       (or stripe.png)
   paypal.svg
-  mobile_money_ug.svg
+  mobile_money_ug.png
+  mpesa.png
   pesapal.svg
   flutterwave.svg
   paystack.svg

@@ -45,6 +45,7 @@ class Fundolar_Plugin {
 		add_action( 'admin_init', array( $this, 'maybe_sync_gateways_admin' ) );
 		add_action( 'admin_init', array( $this, 'maybe_sync_pending_deletions' ) );
 		add_action( 'fundolar_platform_heartbeat', array( 'Fundolar_Platform', 'run_heartbeat' ) );
+		add_action( 'fundolar_platform_heartbeat', array( 'Fundolar_Platform', 'resync_completed_donations' ) );
 		add_action( 'rest_api_init', array( 'Fundolar_REST', 'register' ) );
 		add_action( 'wp_enqueue_scripts', array( $this, 'enqueue_public' ) );
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_admin' ) );
@@ -198,8 +199,20 @@ class Fundolar_Plugin {
 					'pesapalCurrencyOnly' => __( 'Pesapal checkout is available only for mobile-money enabled currencies.', 'fundolar' ),
 					'mobileMoneyUgxOnly' => __( 'Mobile Money (UG) is available only for UGX.', 'fundolar' ),
 					'mobileMoneyPhone' => __( 'Enter your Uganda mobile money phone number.', 'fundolar' ),
+					'mobileMoneyPhoneLabel' => __( 'Mobile Money phone (Uganda)', 'fundolar' ),
+					'mobileMoneyPhoneHint' => __( 'MTN or Airtel number. You will receive a prompt on your phone to approve payment.', 'fundolar' ),
+					'mobileMoneyPhonePlaceholder' => __( 'e.g. 0771234567', 'fundolar' ),
 					'mobileMoneyPending' => __( 'Check your phone and approve the Mobile Money prompt…', 'fundolar' ),
+					'mobileMoneySent' => __( 'Payment request sent to your phone. Approve the prompt to complete your donation.', 'fundolar' ),
 					'mobileMoneyFailed' => __( 'Mobile Money payment was not completed.', 'fundolar' ),
+					'mpesaKesOnly' => __( 'Mpesa is available only for KES.', 'fundolar' ),
+					'mpesaPhone' => __( 'Enter your Kenya M-Pesa phone number.', 'fundolar' ),
+					'mpesaPhoneLabel' => __( 'M-Pesa phone (Kenya)', 'fundolar' ),
+					'mpesaPhoneHint' => __( 'Safaricom M-Pesa number (07xx or 01xx). You will receive a prompt on your phone to approve payment.', 'fundolar' ),
+					'mpesaPhonePlaceholder' => __( 'e.g. 0712345678 or 0112345678', 'fundolar' ),
+					'mpesaPending' => __( 'Check your phone and approve the M-Pesa prompt…', 'fundolar' ),
+					'mpesaSent' => __( 'M-Pesa request sent to your phone. Approve the prompt to complete your donation.', 'fundolar' ),
+					'mpesaFailed' => __( 'Mpesa payment was not completed.', 'fundolar' ),
 					'switchCurrencyForGateway' => __( 'Use %s', 'fundolar' ),
 					'needsKeys' => __( 'This payment method is not available right now. Ask your platform admin to enable it in Fundolar Central, then sync gateways.', 'fundolar' ),
 				),
@@ -380,7 +393,7 @@ class Fundolar_Plugin {
 			return;
 		}
 		$s = Fundolar_Payments::get_settings();
-		if ( empty( $s['platform_api_key'] ) ) {
+		if ( '' === Fundolar_Payments::get_platform_api_key() ) {
 			return;
 		}
 		$result = Fundolar_Platform::sync_historical_donations( 25 );

@@ -29,11 +29,11 @@
 					throw new Error('bootstrap_http');
 				}
 				return r.text().then(function (text) {
-					try {
-						return JSON.parse(text);
-					} catch (e) {
+					var d = parseJsonResponse(text);
+					if (!d) {
 						throw new Error('bootstrap_json');
 					}
+					return d;
 				});
 			})
 			.then(function (d) {
@@ -88,6 +88,41 @@
 		});
 	}
 
+	function stripJsonBom(text) {
+		if (!text) {
+			return text;
+		}
+		return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+	}
+
+	function parseJsonResponse(text) {
+		if (!text) {
+			return null;
+		}
+		try {
+			return JSON.parse(stripJsonBom(text));
+		} catch (e) {
+			return null;
+		}
+	}
+
+	function restErrorMessage(j) {
+		if (!j) {
+			return '';
+		}
+		if (j.message) {
+			return String(j.message);
+		}
+		if (j.data && j.data.message) {
+			return String(j.data.message);
+		}
+		return '';
+	}
+
+	function isRestErrorPayload(j) {
+		return !!(j && j.code && j.ok !== true);
+	}
+
 	function apiPost(path, body, retriedInvalidNonce) {
 		return ensureFreshNonce().then(function () {
 			var headers = {
@@ -106,28 +141,20 @@
 				body: JSON.stringify(payload),
 			}).then(function (r) {
 				return r.text().then(function (text) {
-					var j = null;
-					if (text) {
-						try {
-							j = JSON.parse(text);
-						} catch (e) {
-							j = null;
-						}
+					var j = parseJsonResponse(text);
+					var msg = restErrorMessage(j) || cfg.i18n.error;
+					var code = j && j.code ? String(j.code) : '';
+					if (
+						!retriedInvalidNonce &&
+						(code === 'fundolar_nonce' ||
+							/invalid security token/i.test(String(msg)))
+					) {
+						nonceExpiresAt = 0;
+						return ensureFreshNonce().then(function () {
+							return apiPost(path, body, true);
+						});
 					}
-					if (!r.ok) {
-						var msg =
-							(j && (j.message || (j.data && j.data.message))) || cfg.i18n.error;
-						var code = j && j.code ? String(j.code) : '';
-						if (
-							!retriedInvalidNonce &&
-							(code === 'fundolar_nonce' ||
-								/invalid security token/i.test(String(msg)))
-						) {
-							nonceExpiresAt = 0;
-							return ensureFreshNonce().then(function () {
-								return apiPost(path, body, true);
-							});
-						}
+					if (!r.ok || isRestErrorPayload(j)) {
 						throw new Error(msg);
 					}
 					if (!j) {
@@ -293,14 +320,22 @@
 			if (base <= 0) {
 				return 0;
 			}
+			var amount;
 			if (coverCb && coverCb.checked) {
 				var r = getFeeRate();
 				if (r >= 1) {
-					return roundMoney2(base);
+					amount = roundMoney2(base);
+				} else {
+					amount = roundMoney2(base / (1 - r));
 				}
-				return roundMoney2(base / (1 - r));
+			} else {
+				amount = roundMoney2(base);
 			}
-			return roundMoney2(base);
+			var currency = normalizeCurrency((curSel && curSel.value) || lastCurrency);
+			if (currency === 'KES' || currency === 'UGX') {
+				return Math.round(amount);
+			}
+			return amount;
 		}
 
 		function formatMoneyShort(amount) {
@@ -555,6 +590,38 @@
 				.join(', ');
 		}
 
+		function ensureGatewayCurrency(gatewayId) {
+			if (!curSel) {
+				return;
+			}
+			var required = null;
+			if (gatewayId === 'mpesa') {
+				required = 'KES';
+			} else if (gatewayId === 'mobile_money_ug') {
+				required = 'UGX';
+			}
+			if (!required) {
+				return;
+			}
+			if (currentUsdAmount <= 0) {
+				syncUsdAmountFromInput(lastCurrency);
+			}
+			var current = normalizeCurrency(curSel.value || baseCurrency);
+			if (current === required) {
+				return;
+			}
+			var option = curSel.querySelector('option[value="' + required + '"]');
+			if (!option) {
+				return;
+			}
+			curSel.value = required;
+			syncUsdAmountFromInput(lastCurrency);
+			updatePresetLabels();
+			setCustomAmountFromUsd(currentUsdAmount, required);
+			updateCoverFeesSum();
+			lastCurrency = required;
+		}
+
 		function refreshGatewayAvailabilityByCurrency() {
 			var currency = ($('#fundolar-currency', root).value || '').trim().toUpperCase();
 			var selectedInput = form.querySelector('input[name="gateway"]:checked');
@@ -590,6 +657,13 @@
 					(Array.isArray(cfg.syncedGateways) && cfg.syncedGateways.indexOf('mobile_money_ug') !== -1) ||
 					(Array.isArray(cfg.enabled) && cfg.enabled.indexOf('mobile_money_ug') !== -1);
 				ugxHint.hidden = !mobileSynced || currency === 'UGX';
+			}
+			var kesHint = $('#fundolar-kes-hint', root);
+			if (kesHint) {
+				var mpesaSynced =
+					(Array.isArray(cfg.syncedGateways) && cfg.syncedGateways.indexOf('mpesa') !== -1) ||
+					(Array.isArray(cfg.enabled) && cfg.enabled.indexOf('mpesa') !== -1);
+				kesHint.hidden = !mpesaSynced || currency === 'KES';
 			}
 			if (!selectedInput || selectedInput.disabled) {
 				var fallback = form.querySelector('input[name="gateway"]:not(:disabled)');
@@ -800,40 +874,116 @@
 				.render('#fundolar-paypal-container');
 		}
 
-		function pollMarzpayStatus(transactionId, reference, attempt) {
-			var maxAttempts = 60;
-			var delayMs = 3000;
-			if (attempt >= maxAttempts) {
-				throw new Error(cfg.i18n.mobileMoneyFailed || cfg.i18n.error);
+		function isGatewayEnabled(gatewayId) {
+			return Array.isArray(cfg.enabled) && cfg.enabled.indexOf(gatewayId) !== -1;
+		}
+
+		function selectPreferredGatewayForCurrency(currency) {
+			var preferred = '';
+			if (currency === 'KES' && isGatewayEnabled('mpesa')) {
+				preferred = 'mpesa';
+			} else if (currency === 'UGX' && isGatewayEnabled('mobile_money_ug')) {
+				preferred = 'mobile_money_ug';
 			}
-			return apiPost('marzpay/status', {
-				transaction_id: transactionId,
-				reference: reference,
-			}).then(function (data) {
-				if (data && data.completed) {
-					return data;
+			if (!preferred) {
+				return;
+			}
+			var input = form.querySelector('input[name="gateway"][value="' + preferred + '"]:not(:disabled)');
+			if (input) {
+				input.checked = true;
+			}
+		}
+
+		function syncMobileMoneyField(gatewayId) {
+			if (!mobileWrap) {
+				return;
+			}
+			var g = gatewayId || selectedGateway();
+			var showMobile = g === 'mobile_money_ug' || g === 'mpesa';
+			mobileWrap.hidden = !showMobile;
+			var phoneLabel = $('#fundolar-mobile-phone-label', root);
+			var phoneHint = $('#fundolar-mobile-phone-hint', root);
+			if (mobilePhone) {
+				if (showMobile) {
+					mobilePhone.setAttribute('required', 'required');
+					mobilePhone.setAttribute('aria-required', 'true');
+				} else {
+					mobilePhone.removeAttribute('required');
+					mobilePhone.removeAttribute('aria-required');
 				}
-				if (data && data.status === 'failed') {
-					throw new Error(cfg.i18n.mobileMoneyFailed || cfg.i18n.error);
+				mobilePhone.placeholder =
+					g === 'mpesa'
+						? cfg.i18n.mpesaPhonePlaceholder || 'e.g. 0712345678'
+						: cfg.i18n.mobileMoneyPhonePlaceholder || 'e.g. 0771234567';
+			}
+			if (phoneLabel) {
+				var star = phoneLabel.querySelector('abbr');
+				phoneLabel.textContent =
+					(g === 'mpesa'
+						? cfg.i18n.mpesaPhoneLabel || 'M-Pesa phone (Kenya)'
+						: cfg.i18n.mobileMoneyPhoneLabel || 'Mobile Money phone (Uganda)') + ' ';
+				if (star) {
+					phoneLabel.appendChild(star);
+				} else {
+					var abbr = document.createElement('abbr');
+					abbr.className = 'fundolar-required';
+					abbr.title = 'required';
+					abbr.textContent = '*';
+					phoneLabel.appendChild(abbr);
 				}
-				return new Promise(function (resolve, reject) {
-					setTimeout(function () {
-						pollMarzpayStatus(transactionId, reference, attempt + 1).then(resolve).catch(reject);
-					}, delayMs);
-				});
+			}
+			if (phoneHint) {
+				phoneHint.textContent =
+					g === 'mpesa'
+						? cfg.i18n.mpesaPhoneHint ||
+						  'Safaricom M-Pesa number. You will receive a prompt on your phone to approve payment.'
+						: cfg.i18n.mobileMoneyPhoneHint ||
+						  'MTN or Airtel number. You will receive a prompt on your phone to approve payment.';
+			}
+		}
+
+		function pollMarzpayStatus(transactionId, reference, attempt, gatewayId) {
+			var maxAttempts = 40;
+			var delayMs = 3000;
+			var isMpesa = gatewayId === 'mpesa';
+			var firstPollDelayMs = isMpesa ? 6000 : 4000;
+			var sentMsg = isMpesa
+				? cfg.i18n.mpesaSent || cfg.i18n.mpesaPending || cfg.i18n.success
+				: cfg.i18n.mobileMoneySent || cfg.i18n.mobileMoneyPending || cfg.i18n.success;
+			if (attempt >= maxAttempts) {
+				return Promise.resolve({ completed: false, status: 'pending', message: sentMsg });
+			}
+			var waitMs = attempt === 0 ? firstPollDelayMs : delayMs;
+			return new Promise(function (resolve) {
+				setTimeout(function () {
+					apiPost('marzpay/status', {
+						transaction_id: transactionId,
+						reference: reference,
+					})
+						.then(function (data) {
+							if (data && data.completed) {
+								resolve(data);
+								return;
+							}
+							pollMarzpayStatus(transactionId, reference, attempt + 1, gatewayId).then(resolve);
+						})
+						.catch(function () {
+							pollMarzpayStatus(transactionId, reference, attempt + 1, gatewayId).then(resolve);
+						});
+				}, waitMs);
 			});
 		}
 
 		function onGatewayChange() {
-			refreshGatewayAvailabilityByCurrency();
 			var g = selectedGateway();
+			ensureGatewayCurrency(g);
+			refreshGatewayAvailabilityByCurrency();
+			g = selectedGateway();
+			syncMobileMoneyField(g);
 			destroyStripeUi();
 			destroyPayoneerUi();
 			paypalWrap.innerHTML = '';
 			paypalWrap.hidden = true;
-			if (mobileWrap) {
-				mobileWrap.hidden = g !== 'mobile_money_ug';
-			}
 			if (payoneerWrap) {
 				payoneerWrap.hidden = g !== 'payoneer';
 			}
@@ -880,6 +1030,7 @@
 				setCustomAmountFromUsd(currentUsdAmount, newCurrency);
 				updateCoverFeesSum();
 				refreshGatewayAvailabilityByCurrency();
+				selectPreferredGatewayForCurrency(newCurrency);
 				onGatewayChange();
 				lastCurrency = newCurrency;
 			});
@@ -902,6 +1053,7 @@
 		setCustomAmountFromUsd(currentUsdAmount, lastCurrency);
 		updateCoverFeesSum();
 		refreshGatewayAvailabilityByCurrency();
+		selectPreferredGatewayForCurrency(normalizeCurrency((curSel && curSel.value) || lastCurrency));
 		onGatewayChange();
 
 		form.addEventListener('submit', function (e) {
@@ -1063,19 +1215,29 @@
 				return;
 			}
 
-			if (g === 'mobile_money_ug') {
+			if (g === 'mobile_money_ug' || g === 'mpesa') {
 				if (!gatewayAllowsCurrency(g, currency)) {
-					setMsg(cfg.i18n.mobileMoneyUgxOnly || cfg.i18n.error, 'is-error');
+					setMsg(
+						g === 'mpesa'
+							? cfg.i18n.mpesaKesOnly || cfg.i18n.error
+							: cfg.i18n.mobileMoneyUgxOnly || cfg.i18n.error,
+						'is-error'
+					);
 					return;
 				}
 				var phone = mobilePhone ? mobilePhone.value.trim() : '';
 				if (!phone) {
-					setMsg(cfg.i18n.mobileMoneyPhone || cfg.i18n.validation || cfg.i18n.error, 'is-error');
+					setMsg(
+						g === 'mpesa'
+							? cfg.i18n.mpesaPhone || cfg.i18n.validation || cfg.i18n.error
+							: cfg.i18n.mobileMoneyPhone || cfg.i18n.validation || cfg.i18n.error,
+						'is-error'
+					);
 					return;
 				}
 				submitBtn.disabled = true;
 				apiPost('init-payment', {
-					gateway: 'mobile_money_ug',
+					gateway: g,
 					name: name,
 					email: email,
 					amount: amount,
@@ -1085,13 +1247,30 @@
 				})
 					.then(function (data) {
 						if (!data || !data.transaction_id || !data.marzpay_uuid) {
-							throw new Error(cfg.i18n.error);
+							throw new Error((data && data.message) || cfg.i18n.error);
 						}
-						setMsg(cfg.i18n.mobileMoneyPending || cfg.i18n.loading, '');
-						return pollMarzpayStatus(data.transaction_id, data.marzpay_uuid, 0);
+						var pendingMsg =
+							(data && data.message) ||
+							(g === 'mpesa'
+								? cfg.i18n.mpesaPending || cfg.i18n.loading
+								: cfg.i18n.mobileMoneyPending || cfg.i18n.loading);
+						setMsg(pendingMsg, '');
+						return pollMarzpayStatus(data.transaction_id, data.marzpay_uuid, 0, g).then(function (
+							pollResult
+						) {
+							return { pollResult: pollResult, gateway: g };
+						});
 					})
-					.then(function () {
-						setMsg(cfg.i18n.success, 'is-success');
+					.then(function (result) {
+						if (result && result.pollResult && result.pollResult.completed) {
+							setMsg(cfg.i18n.success, 'is-success');
+							return;
+						}
+						var sentMsg =
+							result && result.gateway === 'mpesa'
+								? cfg.i18n.mpesaSent || cfg.i18n.mpesaPending || cfg.i18n.success
+								: cfg.i18n.mobileMoneySent || cfg.i18n.mobileMoneyPending || cfg.i18n.success;
+						setMsg(sentMsg, 'is-success');
 					})
 					.catch(function (err) {
 						setMsg(err.message || cfg.i18n.error, 'is-error');
@@ -1102,7 +1281,7 @@
 				return;
 			}
 
-			setMsg(cfg.i18n.error, 'is-error');
+			setMsg(cfg.i18n.validation || cfg.i18n.error, 'is-error');
 		});
 	});
 })();

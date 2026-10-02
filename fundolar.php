@@ -3,7 +3,7 @@
  * Plugin Name:       Fundolar
  * Plugin URI:        https://fundolar.com/
  * Description:       Accept donations with Fundolar Central — connect your site, sync payment gateways, and track donations from WordPress.
- * Version:           1.4.0
+ * Version:           1.5.1
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            Fundolar

@@ -1,6 +1,36 @@
 Fundolar Plugin Changelog
 ========================
 
+Version 1.5.1 - 2026-10-02
+--------------------------
+- Security hardening: same-site return URL validation, MarzPay webhook token auth, donate REST rate limits.
+- Encrypt platform API keys; refuse plaintext OpenSSL fallback for new secrets.
+- Allowlist Central and update hosts; verify optional package SHA-256 on auto-update.
+
+Version 1.5.0 - 2026-09-05
+--------------------------
+- Record successful Stripe/PayPal donations reliably in the plugin and Fundolar Central.
+- Fix PayPal meta updates that wiped Central donation ids.
+- Upsert/create on status sync when create previously failed; hourly resync for completed rows missing Central link.
+
+Version 1.4.9 - 2026-08-29
+--------------------------
+- M-Pesa / Mobile Money: show phone field when Mpesa or Mobile Money (UG) is selected; auto-select Mpesa when currency is KES.
+- Donate flow no longer shows a false error while waiting for the phone prompt — MarzPay final status is webhook-driven.
+- Status polling keeps waiting for approval instead of failing immediately; donors see a clear “request sent to your phone” message.
+
+Version 1.4.8 - 2026-08-29
+--------------------------
+- M-Pesa / Mobile Money: wait before first status poll and ignore early "failed" responses so donors see the phone prompt instead of an instant error.
+- Surface provider failure messages from MarzPay when a mobile payment does not complete.
+- Round KES/UGX donation amounts to whole units before checkout.
+- Updated M-Pesa and Mobile Money (UG) gateway logos (PNG).
+
+Version 1.4.7 - 2026-08-29
+--------------------------
+- Fix donation form REST parsing when responses include a UTF-8 BOM (fixes immediate "Something went wrong" on M-Pesa / Mobile Money donate).
+- Removed stray UTF-8 BOM from admin bootstrap file; release build strips BOM from PHP sources.
+
 Version 1.4.0 - 2026-08-24
 --------------------------
 - Fundolar.com distribution: Central-only payments — removed own API key fields from Settings → Payments.

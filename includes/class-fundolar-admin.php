@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 /**
  * wp-admin settings, documentation, and transactions.
  *
@@ -677,8 +677,11 @@ class Fundolar_Admin {
 		$central_active = Fundolar_Payments::is_central_connected();
 		$register_url   = Fundolar_Platform::PLATFORM_BASE_URL . '/owner/register';
 		$central_url    = Fundolar_Platform::PLATFORM_BASE_URL;
-		$synced         = array_values( array_unique( array_map( 'sanitize_key', (array) ( $s['enabled_gateways'] ?? array() ) ) ) );
-		$ready          = Fundolar_Payments::gateways_ready_for_front();
+		if ( $central_active && Fundolar_Payments::is_central_mode() && ! empty( Fundolar_Payments::synced_gateways_missing_credentials() ) ) {
+			Fundolar_Platform::maybe_sync_gateways( true );
+		}
+		$synced = array_values( array_unique( array_map( 'sanitize_key', (array) ( Fundolar_Payments::get_settings()['enabled_gateways'] ?? array() ) ) ) );
+		$ready  = Fundolar_Payments::gateways_ready_for_front();
 		?>
 		<div class="fundolar-fee-banner" role="note">
 			<span class="fundolar-fee-banner__icon dashicons dashicons-info" aria-hidden="true"></span>
